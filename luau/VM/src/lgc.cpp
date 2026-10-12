@@ -19,11 +19,12 @@
 #include <cstddef>
 
 LUAU_FASTFLAGVARIABLE(LuauGcTraceUdata)
-LUAU_FLAGVERSION(LuauGcTraceUdata, 3)
+LUAU_FLAGVERSION(LuauGcTraceUdata, 4)
 LUAU_FASTFLAG(LuauBackedgeHeapCheck)
 LUAU_FASTFLAG(LuauFastpcall)
-LUAU_FASTFLAG(DebugLuauCoroutineFinally)
+LUAU_FASTFLAG(LuauCoroutineFinally)
 LUAU_FASTFLAG(LuauFrozenMetaButterfly)
+LUAU_DYNAMIC_FASTFLAGVARIABLE(LuauGcHeapShrinkFix, false)
 
 /*
  * Luau uses an incremental non-generational non-moving mark&sweep garbage collector.
@@ -451,7 +452,7 @@ static void traversestack(global_State* g, lua_State* l)
     if (l->namecall)
         stringmark(l->namecall);
 
-    if (FFlag::DebugLuauCoroutineFinally && l->finalizers)
+    if (FFlag::LuauCoroutineFinally && l->finalizers)
         markobject(g, l->finalizers);
 
     for (StkId o = l->stack; o < l->top; o++)
@@ -514,7 +515,9 @@ static void shrinkstack(lua_State* L)
 
     if (3 * size_t(ci_used) < size_t(L->size_ci) && 2 * BASIC_CI_SIZE < L->size_ci)
         luaD_reallocCI(L, L->size_ci / 2); // still big enough...
+    luaD_propagate(L);
     condhardstacktests(luaD_reallocCI(L, ci_used + 1));
+    luaD_propagate(L);
 
     if (3 * size_t(s_used) < size_t(L->stacksize) && 2 * (BASIC_STACK_SIZE + EXTRA_STACK) < L->stacksize)
         luaD_reallocstack(L, L->stacksize / 2, 0); // still big enough...
@@ -1278,6 +1281,12 @@ static int64_t getheaptriggererroroffset(global_State* g)
     return int64_t(totalTerm * 1024);
 }
 
+// the heap can shrink between measurements (after a full collection, or when thread stacks are shrunk during marking), which counts as no growth
+static size_t getheapgrowth(size_t current, size_t previous)
+{
+    return current > previous ? current - previous : 0;
+}
+
 static size_t getheaptrigger(global_State* g, size_t heapgoal)
 {
     // adjust threshold based on a guess of how many bytes will be allocated between the cycle start and sweep phase
@@ -1289,7 +1298,11 @@ static size_t getheaptrigger(global_State* g, size_t heapgoal)
     if (allocationduration < durationthreshold)
         return heapgoal;
 
-    double allocationrate = (g->gcstats.atomicstarttotalsizebytes - g->gcstats.endtotalsizebytes) / allocationduration;
+    double allocationrate;
+    if (DFFlag::LuauGcHeapShrinkFix)
+        allocationrate = getheapgrowth(g->gcstats.atomicstarttotalsizebytes, g->gcstats.endtotalsizebytes) / allocationduration;
+    else
+        allocationrate = (g->gcstats.atomicstarttotalsizebytes - g->gcstats.endtotalsizebytes) / allocationduration;
     double markduration = g->gcstats.atomicstarttimestamp - g->gcstats.starttimestamp;
 
     int64_t expectedgrowth = int64_t(markduration * allocationrate);
@@ -1435,6 +1448,13 @@ void luaC_fullgc(lua_State* L)
 
     g->gcstats.heapgoalsizebytes = heapgoalsizebytes;
 
+    if (DFFlag::LuauGcHeapShrinkFix)
+    {
+        // full collection ends a cycle, so the heap growth is measured from this point
+        g->gcstats.endtimestamp = lua_clock();
+        g->gcstats.endtotalsizebytes = g->totalbytes;
+    }
+
 #ifdef LUAI_GCMETRICS
     finishGcCycleMetrics(g);
 #endif
@@ -1519,6 +1539,9 @@ int64_t luaC_allocationrate(lua_State* L)
         if (duration < durationthreshold)
             return -1;
 
+        if (DFFlag::LuauGcHeapShrinkFix)
+            return int64_t(getheapgrowth(g->totalbytes, g->gcstats.endtotalsizebytes) / duration);
+
         return int64_t((g->totalbytes - g->gcstats.endtotalsizebytes) / duration);
     }
 
@@ -1527,6 +1550,9 @@ int64_t luaC_allocationrate(lua_State* L)
 
     if (duration < durationthreshold)
         return -1;
+
+    if (DFFlag::LuauGcHeapShrinkFix)
+        return int64_t(getheapgrowth(g->gcstats.atomicstarttotalsizebytes, g->gcstats.endtotalsizebytes) / duration);
 
     return int64_t((g->gcstats.atomicstarttotalsizebytes - g->gcstats.endtotalsizebytes) / duration);
 }

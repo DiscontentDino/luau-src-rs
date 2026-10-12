@@ -51,14 +51,24 @@ void luaL_openlibs(lua_State* L)
     for (; lib->func; lib++)
     {
         lua_pushcfunction(L, lib->func, NULL);
+        if (lua_haserror(L))
+            return;
         lua_pushstring(L, lib->name);
+        if (lua_haserror(L))
+            return;
         lua_call(L, 1, 0);
+        if (lua_haserror(L))
+            return;
     }
 
     if (FFlag::DebugLuauUserDefinedClassesRuntime)
     {
         lua_pushcfunction(L, luaopen_class, NULL);
+        if (lua_haserror(L))
+            return;
         lua_pushstring(L, LUA_CLASSLIBNAME);
+        if (lua_haserror(L))
+            return;
         lua_call(L, 1, 0);
     }
 }
@@ -70,16 +80,26 @@ void luaL_sandbox(lua_State* L)
     while (lua_next(L, LUA_GLOBALSINDEX) != 0)
     {
         if (lua_istable(L, -1))
+        {
             lua_setreadonly(L, -1, true);
+            if (lua_haserror(L))
+                return;
+        }
 
         lua_pop(L, 1);
     }
+    if (lua_haserror(L))
+        return;
 
     // set all builtin metatables to read-only
     lua_pushliteral(L, "");
+    if (lua_haserror(L))
+        return;
     if (lua_getmetatable(L, -1))
     {
         lua_setreadonly(L, -1, true);
+        if (lua_haserror(L))
+            return;
         lua_pop(L, 2);
     }
     else
@@ -97,6 +117,8 @@ void luaL_sandbox(lua_State* L)
         if (lua_getmetatable(L, -1))
         {
             lua_setreadonly(L, -1, true);
+            if (lua_haserror(L))
+                return;
             lua_pop(L, 2);
         }
         else
@@ -107,6 +129,8 @@ void luaL_sandbox(lua_State* L)
 
     // set globals to readonly and activate safeenv since the env is immutable
     lua_setreadonly(L, LUA_GLOBALSINDEX, true);
+    if (lua_haserror(L))
+        return;
     lua_setsafeenv(L, LUA_GLOBALSINDEX, true);
 }
 
@@ -114,11 +138,19 @@ void luaL_sandboxthread(lua_State* L)
 {
     // create new global table that proxies reads to original table
     lua_newtable(L);
+    if (lua_haserror(L))
+        return;
 
     lua_newtable(L);
+    if (lua_haserror(L))
+        return;
     lua_pushvalue(L, LUA_GLOBALSINDEX);
     lua_setfield(L, -2, "__index");
+    if (lua_haserror(L))
+        return;
     lua_setreadonly(L, -1, true);
+    if (lua_haserror(L))
+        return;
 
     lua_setmetatable(L, -2);
 

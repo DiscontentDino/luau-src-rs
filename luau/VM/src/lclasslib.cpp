@@ -9,8 +9,10 @@
  */
 static int class_isinstance(lua_State* L)
 {
-    luaL_checkany(L, 1);
-    luaL_checktype(L, 2, LUA_TCLASS);
+    if (!luaL_requireany(L, 1))
+        return LUA_RAISED;
+    if (!luaL_requiretype(L, 2, LUA_TCLASS))
+        return LUA_RAISED;
 
     const TValue* obj = luaA_toobject(L, 1);
 
@@ -39,7 +41,8 @@ static int class_isinstance(lua_State* L)
 
 static int class_classof(lua_State* L)
 {
-    luaL_checkany(L, 1);
+    if (!luaL_requireany(L, 1))
+        return LUA_RAISED;
     if (!lua_isobject(L, 1))
     {
         lua_pushnil(L);

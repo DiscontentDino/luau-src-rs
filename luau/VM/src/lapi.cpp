@@ -21,7 +21,7 @@
 
 LUAU_FASTFLAG(LuauGcTraceUdata)
 LUAU_FASTFLAGVARIABLE(LuauNewPointerEncode)
-LUAU_FASTFLAGVARIABLE(DebugLuauCoroutineFinally)
+LUAU_FASTFLAGVARIABLE(LuauCoroutineFinally)
 LUAU_FASTFLAGVARIABLE(LuauFrozenMetaButterfly)
 
 /*
@@ -55,7 +55,19 @@ const char* luau_ident = "$Luau: Copyright (C) 2019-2024 Roblox Corporation $\n"
 
 #define api_checkvalidindex(L, i) api_check(L, (i) != luaO_nilobject)
 
-#define ensure_stack_impl(L, errorL, size) \
+#if LUAU_ERRORS_AS_RETURNS
+#define ensure_stack_impl(L, errorL, size, ...) \
+    { \
+        if (L->top + (size) > L->ci->top && !lua_checkstack(L, (size))) \
+        { \
+            luaO_pushfstring(errorL, "stack overflow"); \
+            if (!(errorL)->global->errcode) \
+                luaD_seterror(errorL, LUA_ERRRUN); \
+            return __VA_ARGS__; \
+        } \
+    }
+#else
+#define ensure_stack_impl(L, errorL, size, ...) \
     { \
         if (L->top + (size) > L->ci->top && !lua_checkstack(L, (size))) \
         { \
@@ -63,8 +75,9 @@ const char* luau_ident = "$Luau: Copyright (C) 2019-2024 Roblox Corporation $\n"
             lua_error(errorL); \
         } \
     }
+#endif
 
-#define ensure_stack(L, size) ensure_stack_impl(L, L, size)
+#define ensure_stack(L, size, ...) ensure_stack_impl(L, L, size, __VA_ARGS__)
 
 #define api_incr_top(L) \
     { \
@@ -157,6 +170,7 @@ void luaA_pushclass(lua_State* L, LuauClass* lco)
 
 int lua_checkstack(lua_State* L, int size)
 {
+    api_checknoerror(L);
     api_check(L, size >= 0);
 
     int res = 1;
@@ -194,9 +208,11 @@ int lua_checkstack(lua_State* L, int size)
 
 void lua_rawcheckstack(lua_State* L, int size)
 {
+    api_checknoerror(L);
     api_check(L, size >= 0);
 
     luaD_checkstack(L, size);
+    luaD_propagate(L);
     expandstacklimit(L, L->top + size);
 }
 
@@ -232,10 +248,12 @@ void lua_xpush(lua_State* from, lua_State* to, int idx)
 
 lua_State* lua_newthread(lua_State* L)
 {
+    api_checknoerror(L);
     luaC_checkGC(L);
     luaC_threadbarrier(L);
-    ensure_stack(L, 1);
+    ensure_stack(L, 1, nullptr);
     lua_State* L1 = luaE_newthread(L);
+    luaD_propagate(L, nullptr);
     setthvalue(L, L->top, L1);
     api_incr_top(L);
     global_State* g = L->global;
@@ -246,6 +264,7 @@ lua_State* lua_newthread(lua_State* L)
 
 lua_State* lua_mainthread(lua_State* L)
 {
+    api_checknoerror(L);
     return L->global->mainthread;
 }
 
@@ -255,17 +274,20 @@ lua_State* lua_mainthread(lua_State* L)
 
 int lua_absindex(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     api_check(L, (idx > 0 && idx <= L->top - L->base) || (idx < 0 && -idx <= L->top - L->base) || lua_ispseudo(idx));
     return idx > 0 || lua_ispseudo(idx) ? idx : cast_int(L->top - L->base) + idx + 1;
 }
 
 int lua_gettop(lua_State* L)
 {
+    api_checknoerror(L);
     return cast_int(L->top - L->base);
 }
 
 void lua_settop(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     if (idx >= 0)
     {
         ensure_stack(L, idx - int(L->top - L->base));
@@ -282,6 +304,7 @@ void lua_settop(lua_State* L, int idx)
 
 void lua_remove(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     StkId p = index2addr(L, idx);
     api_checkvalidindex(L, p);
     while (++p < L->top)
@@ -291,6 +314,7 @@ void lua_remove(lua_State* L, int idx)
 
 void lua_insert(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     luaC_threadbarrier(L);
     StkId p = index2addr(L, idx);
     api_checkvalidindex(L, p);
@@ -301,6 +325,7 @@ void lua_insert(lua_State* L, int idx)
 
 void lua_replace(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     api_checknelems(L, 1);
     luaC_threadbarrier(L);
     StkId o = index2addr(L, idx);
@@ -329,6 +354,7 @@ void lua_replace(lua_State* L, int idx)
 
 void lua_pushvalue(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     luaC_threadbarrier(L);
     ensure_stack(L, 1);
     StkId o = index2addr(L, idx);
@@ -342,12 +368,14 @@ void lua_pushvalue(lua_State* L, int idx)
 
 int lua_type(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     StkId o = index2addr(L, idx);
     return (o == luaO_nilobject) ? LUA_TNONE : ttype(o);
 }
 
 const char* lua_typename(lua_State* L, int t)
 {
+    api_checknoerror(L);
     api_check(L, t >= LUA_TNONE && t < LUA_T_COUNT);
 
     return (t == LUA_TNONE) ? "no value" : luaT_typenames[t];
@@ -355,18 +383,21 @@ const char* lua_typename(lua_State* L, int t)
 
 int lua_iscfunction(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     StkId o = index2addr(L, idx);
     return iscfunction(o);
 }
 
 int lua_isLfunction(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     StkId o = index2addr(L, idx);
     return isLfunction(o);
 }
 
 int lua_isnumber(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     TValue n;
     const TValue* o = index2addr(L, idx);
     return tonumber(o, &n);
@@ -374,18 +405,21 @@ int lua_isnumber(lua_State* L, int idx)
 
 int lua_isstring(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     int t = lua_type(L, idx);
     return (t == LUA_TSTRING || t == LUA_TNUMBER);
 }
 
 int lua_isuserdata(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     const TValue* o = index2addr(L, idx);
     return (ttisuserdata(o) || ttislightuserdata(o));
 }
 
 int lua_rawequal(lua_State* L, int index1, int index2)
 {
+    api_checknoerror(L);
     StkId o1 = index2addr(L, index1);
     StkId o2 = index2addr(L, index2);
     return (o1 == luaO_nilobject || o2 == luaO_nilobject) ? 0 : luaO_rawequalObj(o1, o2);
@@ -393,6 +427,7 @@ int lua_rawequal(lua_State* L, int index1, int index2)
 
 int lua_equal(lua_State* L, int index1, int index2)
 {
+    api_checknoerror(L);
     StkId o1, o2;
     int i;
     o1 = index2addr(L, index1);
@@ -403,6 +438,7 @@ int lua_equal(lua_State* L, int index1, int index2)
 
 int lua_lessthan(lua_State* L, int index1, int index2)
 {
+    api_checknoerror(L);
     StkId o1, o2;
     int i;
     o1 = index2addr(L, index1);
@@ -413,6 +449,7 @@ int lua_lessthan(lua_State* L, int index1, int index2)
 
 double lua_tonumberx(lua_State* L, int idx, int* isnum)
 {
+    api_checknoerror(L);
     TValue n;
     const TValue* o = index2addr(L, idx);
     if (tonumber(o, &n))
@@ -431,6 +468,7 @@ double lua_tonumberx(lua_State* L, int idx, int* isnum)
 
 int lua_tointegerx(lua_State* L, int idx, int* isnum)
 {
+    api_checknoerror(L);
     TValue n;
     const TValue* o = index2addr(L, idx);
     if (tonumber(o, &n))
@@ -452,6 +490,7 @@ int lua_tointegerx(lua_State* L, int idx, int* isnum)
 
 unsigned lua_tounsignedx(lua_State* L, int idx, int* isnum)
 {
+    api_checknoerror(L);
     TValue n;
     const TValue* o = index2addr(L, idx);
     if (tonumber(o, &n))
@@ -473,12 +512,14 @@ unsigned lua_tounsignedx(lua_State* L, int idx, int* isnum)
 
 int lua_toboolean(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     const TValue* o = index2addr(L, idx);
     return !l_isfalse(o);
 }
 
 int64_t lua_tointeger64(lua_State* L, int idx, int* isinteger)
 {
+    api_checknoerror(L);
     const TValue* o = index2addr(L, idx);
     if (ttisinteger(o))
     {
@@ -496,6 +537,7 @@ int64_t lua_tointeger64(lua_State* L, int idx, int* isinteger)
 
 const char* lua_tolstring(lua_State* L, int idx, size_t* len)
 {
+    api_checknoerror(L);
     StkId o = index2addr(L, idx);
     if (!ttisstring(o))
     {
@@ -516,6 +558,7 @@ const char* lua_tolstring(lua_State* L, int idx, size_t* len)
 
 const char* lua_tostringatom(lua_State* L, int idx, int* atom)
 {
+    api_checknoerror(L);
     StkId o = index2addr(L, idx);
     if (!ttisstring(o))
         return NULL;
@@ -530,6 +573,7 @@ const char* lua_tostringatom(lua_State* L, int idx, int* atom)
 
 const char* lua_tolstringatom(lua_State* L, int idx, size_t* len, int* atom)
 {
+    api_checknoerror(L);
     StkId o = index2addr(L, idx);
 
     if (!ttisstring(o))
@@ -553,6 +597,7 @@ const char* lua_tolstringatom(lua_State* L, int idx, size_t* len, int* atom)
 
 const char* lua_namecallatom(lua_State* L, int* atom)
 {
+    api_checknoerror(L);
     TString* s = L->namecall;
     if (!s)
         return NULL;
@@ -566,6 +611,7 @@ const char* lua_namecallatom(lua_State* L, int* atom)
 
 const LUA_VECTOR_TYPE* lua_tovector(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     StkId o = index2addr(L, idx);
     if (!ttisvector(o))
         return NULL;
@@ -574,6 +620,7 @@ const LUA_VECTOR_TYPE* lua_tovector(lua_State* L, int idx)
 
 int lua_objlen(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     StkId o = index2addr(L, idx);
     switch (ttype(o))
     {
@@ -592,24 +639,28 @@ int lua_objlen(lua_State* L, int idx)
 
 lua_CFunction lua_tocfunction(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     StkId o = index2addr(L, idx);
     return (!iscfunction(o)) ? NULL : cast_to(lua_CFunction, clvalue(o)->c.f);
 }
 
 void* lua_tolightuserdata(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     StkId o = index2addr(L, idx);
     return (!ttislightuserdata(o)) ? NULL : pvalue(o);
 }
 
 void* lua_tolightuserdatatagged(lua_State* L, int idx, int tag)
 {
+    api_checknoerror(L);
     StkId o = index2addr(L, idx);
     return (!ttislightuserdata(o) || lightuserdatatag(o) != tag) ? NULL : pvalue(o);
 }
 
 void* lua_touserdata(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     StkId o = index2addr(L, idx);
     if (ttisuserdata(o))
         return uvalue(o)->data;
@@ -621,12 +672,14 @@ void* lua_touserdata(lua_State* L, int idx)
 
 void* lua_touserdatatagged(lua_State* L, int idx, int tag)
 {
+    api_checknoerror(L);
     StkId o = index2addr(L, idx);
     return (ttisuserdata(o) && uvalue(o)->tag == tag) ? uvalue(o)->data : NULL;
 }
 
 int lua_userdatatag(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     StkId o = index2addr(L, idx);
     if (ttisuserdata(o))
         return uvalue(o)->tag;
@@ -635,6 +688,7 @@ int lua_userdatatag(lua_State* L, int idx)
 
 int lua_lightuserdatatag(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     StkId o = index2addr(L, idx);
     if (ttislightuserdata(o))
         return lightuserdatatag(o);
@@ -643,12 +697,14 @@ int lua_lightuserdatatag(lua_State* L, int idx)
 
 lua_State* lua_tothread(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     StkId o = index2addr(L, idx);
     return (!ttisthread(o)) ? NULL : thvalue(o);
 }
 
 void* lua_tobuffer(lua_State* L, int idx, size_t* len)
 {
+    api_checknoerror(L);
     StkId o = index2addr(L, idx);
 
     if (!ttisbuffer(o))
@@ -664,6 +720,7 @@ void* lua_tobuffer(lua_State* L, int idx, size_t* len)
 
 const void* lua_topointer(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     StkId o = index2addr(L, idx);
     switch (ttype(o))
     {
@@ -682,6 +739,7 @@ const void* lua_topointer(lua_State* L, int idx)
 
 void lua_pushnil(lua_State* L)
 {
+    api_checknoerror(L);
     ensure_stack(L, 1);
     setnilvalue(L->top);
     api_incr_top(L);
@@ -689,6 +747,7 @@ void lua_pushnil(lua_State* L)
 
 void lua_pushnumber(lua_State* L, double n)
 {
+    api_checknoerror(L);
     ensure_stack(L, 1);
     setnvalue(L->top, n);
     api_incr_top(L);
@@ -696,6 +755,7 @@ void lua_pushnumber(lua_State* L, double n)
 
 void lua_pushinteger(lua_State* L, int n)
 {
+    api_checknoerror(L);
     ensure_stack(L, 1);
     setnvalue(L->top, cast_num(n));
     api_incr_top(L);
@@ -703,6 +763,7 @@ void lua_pushinteger(lua_State* L, int n)
 
 void lua_pushinteger64(lua_State* L, int64_t n)
 {
+    api_checknoerror(L);
     ensure_stack(L, 1);
     setlvalue(L->top, n);
     api_incr_top(L);
@@ -710,6 +771,7 @@ void lua_pushinteger64(lua_State* L, int64_t n)
 
 void lua_pushunsigned(lua_State* L, unsigned u)
 {
+    api_checknoerror(L);
     ensure_stack(L, 1);
     setnvalue(L->top, cast_num(u));
     api_incr_top(L);
@@ -718,6 +780,7 @@ void lua_pushunsigned(lua_State* L, unsigned u)
 #if LUA_VECTOR_SIZE == 4
 void lua_pushvector(lua_State* L, LUA_VECTOR_TYPE x, LUA_VECTOR_TYPE y, LUA_VECTOR_TYPE z, LUA_VECTOR_TYPE w)
 {
+    api_checknoerror(L);
     if (LUA_VECTOR_DOUBLE == 1)
     {
         luaC_checkGC(L);
@@ -730,6 +793,7 @@ void lua_pushvector(lua_State* L, LUA_VECTOR_TYPE x, LUA_VECTOR_TYPE y, LUA_VECT
 #else
 void lua_pushvector(lua_State* L, LUA_VECTOR_TYPE x, LUA_VECTOR_TYPE y, LUA_VECTOR_TYPE z)
 {
+    api_checknoerror(L);
     if (LUA_VECTOR_DOUBLE == 1)
     {
         luaC_checkGC(L);
@@ -743,16 +807,20 @@ void lua_pushvector(lua_State* L, LUA_VECTOR_TYPE x, LUA_VECTOR_TYPE y, LUA_VECT
 
 void lua_pushlstring(lua_State* L, const char* s, size_t len)
 {
+    api_checknoerror(L);
     api_check(L, s != nullptr);
     luaC_checkGC(L);
     luaC_threadbarrier(L);
     ensure_stack(L, 1);
-    setsvalue(L, L->top, luaS_newlstr(L, s, len));
+    TString* str = luaS_newlstr(L, s, len);
+    luaD_propagate(L);
+    setsvalue(L, L->top, str);
     api_incr_top(L);
 }
 
 void lua_pushstring(lua_State* L, const char* s)
 {
+    api_checknoerror(L);
     if (s == NULL)
         lua_pushnil(L);
     else
@@ -761,6 +829,7 @@ void lua_pushstring(lua_State* L, const char* s)
 
 const char* lua_pushvfstring(lua_State* L, const char* fmt, va_list argp)
 {
+    api_checknoerror(L);
     luaC_checkGC(L);
     luaC_threadbarrier(L);
     const char* ret = luaO_pushvfstring(L, fmt, argp);
@@ -769,6 +838,7 @@ const char* lua_pushvfstring(lua_State* L, const char* fmt, va_list argp)
 
 const char* lua_pushfstringL(lua_State* L, const char* fmt, ...)
 {
+    api_checknoerror(L);
     luaC_checkGC(L);
     luaC_threadbarrier(L);
     va_list argp;
@@ -780,6 +850,7 @@ const char* lua_pushfstringL(lua_State* L, const char* fmt, ...)
 
 void lua_pushcclosurek(lua_State* L, lua_CFunction fn, const char* debugname, int nup, lua_Continuation cont)
 {
+    api_checknoerror(L);
     api_check(L, fn != nullptr);
     api_check(L, nup >= 0);
     luaC_checkGC(L);
@@ -787,9 +858,11 @@ void lua_pushcclosurek(lua_State* L, lua_CFunction fn, const char* debugname, in
     ensure_stack(L, 1);
     api_checknelems(L, nup);
     Closure* cl = luaF_newCclosure(L, nup, getcurrenv(L));
+    luaD_propagate(L);
     cl->c.f = fn;
     cl->c.cont = cont;
     cl->c.debugname = debugname ? luaS_new(L, debugname) : nullptr;
+    luaD_propagate(L);
 
     L->top -= nup;
     while (nup--)
@@ -801,6 +874,7 @@ void lua_pushcclosurek(lua_State* L, lua_CFunction fn, const char* debugname, in
 
 void lua_pushboolean(lua_State* L, int b)
 {
+    api_checknoerror(L);
     ensure_stack(L, 1);
     setbvalue(L->top, (b != 0)); // ensure that true is 1
     api_incr_top(L);
@@ -808,6 +882,7 @@ void lua_pushboolean(lua_State* L, int b)
 
 void lua_pushlightuserdatatagged(lua_State* L, void* p, int tag)
 {
+    api_checknoerror(L);
     ensure_stack(L, 1);
     api_check(L, unsigned(tag) < LUA_LUTAG_LIMIT);
     setpvalue(L->top, p, tag);
@@ -816,8 +891,9 @@ void lua_pushlightuserdatatagged(lua_State* L, void* p, int tag)
 
 int lua_pushthread(lua_State* L)
 {
+    api_checknoerror(L);
     luaC_threadbarrier(L);
-    ensure_stack(L, 1);
+    ensure_stack(L, 1, 0);
     setthvalue(L, L->top, L);
     api_incr_top(L);
     return L->global->mainthread == L;
@@ -829,35 +905,44 @@ int lua_pushthread(lua_State* L)
 
 int lua_gettable(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     api_checknelems(L, 1);
     luaC_threadbarrier(L);
     StkId t = index2addr(L, idx);
     api_checkvalidindex(L, t);
     luaV_gettable(L, t, L->top - 1, L->top - 1);
+    luaD_propagate(L, LUA_TNIL);
     return ttype(L->top - 1);
 }
 
 int lua_getfield(lua_State* L, int idx, const char* k)
 {
+    api_checknoerror(L);
     luaC_threadbarrier(L);
-    ensure_stack(L, 1);
+    ensure_stack(L, 1, LUA_TNIL);
     StkId t = index2addr(L, idx);
     api_checkvalidindex(L, t);
     TValue key;
-    setsvalue(L, &key, luaS_new(L, k));
+    TString* str = luaS_new(L, k);
+    luaD_propagate(L, LUA_TNIL);
+    setsvalue(L, &key, str);
     luaV_gettable(L, t, &key, L->top);
+    luaD_propagate(L, LUA_TNIL);
     api_incr_top(L);
     return ttype(L->top - 1);
 }
 
 int lua_rawgetfield(lua_State* L, int idx, const char* k)
 {
+    api_checknoerror(L);
     luaC_threadbarrier(L);
-    ensure_stack(L, 1);
+    ensure_stack(L, 1, LUA_TNIL);
     StkId t = index2addr(L, idx);
     api_check(L, ttistable(t));
     TValue key;
-    setsvalue(L, &key, luaS_new(L, k));
+    TString* str = luaS_new(L, k);
+    luaD_propagate(L, LUA_TNIL);
+    setsvalue(L, &key, str);
     setobj2s(L, L->top, luaH_getstr(hvalue(t), tsvalue(&key)));
     api_incr_top(L);
     return ttype(L->top - 1);
@@ -865,6 +950,7 @@ int lua_rawgetfield(lua_State* L, int idx, const char* k)
 
 int lua_rawget(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     luaC_threadbarrier(L);
     StkId t = index2addr(L, idx);
     api_check(L, ttistable(t));
@@ -874,8 +960,9 @@ int lua_rawget(lua_State* L, int idx)
 
 int lua_rawgeti(lua_State* L, int idx, int n)
 {
+    api_checknoerror(L);
     luaC_threadbarrier(L);
-    ensure_stack(L, 1);
+    ensure_stack(L, 1, LUA_TNIL);
     StkId t = index2addr(L, idx);
     api_check(L, ttistable(t));
     setobj2s(L, L->top, luaH_getnum(hvalue(t), n));
@@ -885,8 +972,9 @@ int lua_rawgeti(lua_State* L, int idx, int n)
 
 int lua_rawgetptagged(lua_State* L, int idx, void* p, int tag)
 {
+    api_checknoerror(L);
     luaC_threadbarrier(L);
-    ensure_stack(L, 1);
+    ensure_stack(L, 1, LUA_TNIL);
     StkId t = index2addr(L, idx);
     api_check(L, ttistable(t));
     setobj2s(L, L->top, luaH_getp(hvalue(t), p, tag));
@@ -896,16 +984,20 @@ int lua_rawgetptagged(lua_State* L, int idx, void* p, int tag)
 
 void lua_createtable(lua_State* L, int narray, int nrec)
 {
+    api_checknoerror(L);
     api_check(L, narray >= 0 && nrec >= 0);
     luaC_checkGC(L);
     luaC_threadbarrier(L);
     ensure_stack(L, 1);
-    sethvalue(L, L->top, luaH_new(L, narray, nrec));
+    LuaTable* t = luaH_new(L, narray, nrec);
+    luaD_propagate(L);
+    sethvalue(L, L->top, t);
     api_incr_top(L);
 }
 
 void lua_setreadonly(lua_State* L, int objindex, int enabled)
 {
+    api_checknoerror(L);
     const TValue* o = index2addr(L, objindex);
     api_check(L, ttistable(o));
     LuaTable* t = hvalue(o);
@@ -919,6 +1011,7 @@ void lua_setreadonly(lua_State* L, int objindex, int enabled)
 
 int lua_getreadonly(lua_State* L, int objindex)
 {
+    api_checknoerror(L);
     const TValue* o = index2addr(L, objindex);
     api_check(L, ttistable(o));
     LuaTable* t = hvalue(o);
@@ -936,6 +1029,7 @@ int lua_getreadonly(lua_State* L, int objindex)
 
 void lua_setsafeenv(lua_State* L, int objindex, int enabled)
 {
+    api_checknoerror(L);
     const TValue* o = index2addr(L, objindex);
     api_check(L, ttistable(o));
     LuaTable* t = hvalue(o);
@@ -944,8 +1038,9 @@ void lua_setsafeenv(lua_State* L, int objindex, int enabled)
 
 int lua_getmetatable(lua_State* L, int objindex)
 {
+    api_checknoerror(L);
     luaC_threadbarrier(L);
-    ensure_stack(L, 1);
+    ensure_stack(L, 1, 0);
     LuaTable* mt = NULL;
     const TValue* obj = index2addr(L, objindex);
     switch (ttype(obj))
@@ -973,6 +1068,7 @@ int lua_getmetatable(lua_State* L, int objindex)
 
 void lua_getfenv(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     luaC_threadbarrier(L);
     ensure_stack(L, 1);
     StkId o = index2addr(L, idx);
@@ -998,74 +1094,95 @@ void lua_getfenv(lua_State* L, int idx)
 
 void lua_settable(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     api_checknelems(L, 2);
     StkId t = index2addr(L, idx);
     api_checkvalidindex(L, t);
     luaV_settable(L, t, L->top - 2, L->top - 1);
+    luaD_propagate(L);
     L->top -= 2; // pop index and value
 }
 
 void lua_setfield(lua_State* L, int idx, const char* k)
 {
+    api_checknoerror(L);
     api_checknelems(L, 1);
     StkId t = index2addr(L, idx);
     api_checkvalidindex(L, t);
     TValue key;
-    setsvalue(L, &key, luaS_new(L, k));
+    TString* str = luaS_new(L, k);
+    luaD_propagate(L);
+    setsvalue(L, &key, str);
     luaV_settable(L, t, &key, L->top - 1);
+    luaD_propagate(L);
     L->top--;
 }
 
 void lua_rawsetfield(lua_State* L, int idx, const char* k)
 {
+    api_checknoerror(L);
     api_checknelems(L, 1);
     StkId t = index2addr(L, idx);
     api_check(L, ttistable(t));
     if (hvalue(t)->readonly)
-        luaG_readonlyerror(L);
-    setobj2t(L, luaH_setstr(L, hvalue(t), luaS_new(L, k)), L->top - 1);
+        luaG_raisereadonlyerror(L, );
+    TString* str = luaS_new(L, k);
+    luaD_propagate(L);
+    TValue* slot = luaH_setstr(L, hvalue(t), str);
+    luaD_propagate(L);
+    setobj2t(L, slot, L->top - 1);
     luaC_barriert(L, hvalue(t), L->top - 1);
     L->top--;
 }
 
 void lua_rawset(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     api_checknelems(L, 2);
     StkId t = index2addr(L, idx);
     api_check(L, ttistable(t));
     if (hvalue(t)->readonly)
-        luaG_readonlyerror(L);
-    setobj2t(L, luaH_set(L, hvalue(t), L->top - 2), L->top - 1);
+        luaG_raisereadonlyerror(L, );
+    TValue* slot = luaH_set(L, hvalue(t), L->top - 2);
+    luaD_propagate(L);
+    setobj2t(L, slot, L->top - 1);
     luaC_barriert(L, hvalue(t), L->top - 1);
     L->top -= 2;
 }
 
 void lua_rawseti(lua_State* L, int idx, int n)
 {
+    api_checknoerror(L);
     api_checknelems(L, 1);
     StkId o = index2addr(L, idx);
     api_check(L, ttistable(o));
     if (hvalue(o)->readonly)
-        luaG_readonlyerror(L);
-    setobj2t(L, luaH_setnum(L, hvalue(o), n), L->top - 1);
+        luaG_raisereadonlyerror(L, );
+    TValue* slot = luaH_setnum(L, hvalue(o), n);
+    luaD_propagate(L);
+    setobj2t(L, slot, L->top - 1);
     luaC_barriert(L, hvalue(o), L->top - 1);
     L->top--;
 }
 
 void lua_rawsetptagged(lua_State* L, int idx, void* p, int tag)
 {
+    api_checknoerror(L);
     api_checknelems(L, 1);
     StkId o = index2addr(L, idx);
     api_check(L, ttistable(o));
     if (hvalue(o)->readonly)
-        luaG_readonlyerror(L);
-    setobj2t(L, luaH_setp(L, hvalue(o), p, tag), L->top - 1);
+        luaG_raisereadonlyerror(L, );
+    TValue* slot = luaH_setp(L, hvalue(o), p, tag);
+    luaD_propagate(L);
+    setobj2t(L, slot, L->top - 1);
     luaC_barriert(L, hvalue(o), L->top - 1);
     L->top--;
 }
 
 int lua_setmetatable(lua_State* L, int objindex)
 {
+    api_checknoerror(L);
     api_checknelems(L, 1);
     TValue* obj = index2addr(L, objindex);
     api_checkvalidindex(L, obj);
@@ -1080,7 +1197,7 @@ int lua_setmetatable(lua_State* L, int objindex)
     case LUA_TTABLE:
     {
         if (hvalue(obj)->readonly)
-            luaG_readonlyerror(L);
+            luaG_raisereadonlyerror(L, 0);
         hvalue(obj)->metatable = mt;
         if (mt)
             luaC_objbarrier(L, hvalue(obj), mt);
@@ -1105,6 +1222,7 @@ int lua_setmetatable(lua_State* L, int objindex)
 
 int lua_setfenv(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     int res = 1;
     api_checknelems(L, 1);
     StkId o = index2addr(L, idx);
@@ -1142,6 +1260,7 @@ int lua_setfenv(lua_State* L, int idx)
 
 void lua_call(lua_State* L, int nargs, int nresults)
 {
+    api_checknoerror(L);
     api_check(L, nargs >= 0);
     api_check(L, nresults >= LUA_MULTRET);
     api_checknelems(L, nargs + 1);
@@ -1153,6 +1272,7 @@ void lua_call(lua_State* L, int nargs, int nresults)
     StkId func = L->top - (nargs + 1);
 
     luaD_call(L, func, nresults);
+    luaD_propagate(L);
 
     adjustresults(L, nresults);
 }
@@ -1175,13 +1295,14 @@ static void f_call(lua_State* L, void* ud)
 
 int lua_pcall(lua_State* L, int nargs, int nresults, int errfunc)
 {
+    api_checknoerror(L);
     api_check(L, nargs >= 0);
     api_check(L, nresults >= LUA_MULTRET);
     api_checknelems(L, nargs + 1);
     api_check(L, L->status == 0);
 
     if (nresults > nargs + 1)
-        ensure_stack(L, nresults - (nargs + 1));
+        ensure_stack(L, nresults - (nargs + 1), LUA_ERRRUN);
 
     ptrdiff_t func = 0;
     if (errfunc != 0)
@@ -1195,6 +1316,7 @@ int lua_pcall(lua_State* L, int nargs, int nresults, int errfunc)
     c.nresults = nresults;
 
     int status = luaD_pcall(L, f_call, &c, savestack(L, c.func), func);
+    luaD_propagate(L, status);
 
     adjustresults(L, nresults);
     return status;
@@ -1215,15 +1337,18 @@ static void f_Ccall(lua_State* L, void* ud)
     struct CCallS* c = cast_to(struct CCallS*, ud);
 
     if (!lua_checkstack(L, 2))
-        luaG_runerror(L, "stack limit");
+        luaG_raiserunerror(L, , "stack limit");
 
     lua_pushcclosurek(L, c->func, nullptr, 0, nullptr);
+    luaD_propagate(L);
     lua_pushlightuserdata(L, c->ud);
+    luaD_propagate(L);
     luaD_call(L, L->top - 2, 0);
 }
 
 int lua_cpcall(lua_State* L, lua_CFunction func, void* ud)
 {
+    api_checknoerror(L);
     api_check(L, L->status == 0);
     api_check(L, func != nullptr);
 
@@ -1236,11 +1361,13 @@ int lua_cpcall(lua_State* L, lua_CFunction func, void* ud)
 
 int lua_callyieldable(lua_State* L, int nargs, int nresults)
 {
+    api_checknoerror(L);
     api_check(L, iscfunction(L->ci->func));
     Closure* cl = clvalue(L->ci->func);
     api_check(L, cl->c.cont);
 
     lua_call(L, nargs, nresults);
+    luaD_propagate(L, LUA_RAISED);
 
     // yielding means we need to propagate yield; resume will call continuation function later
     if (isyielded(L))
@@ -1251,6 +1378,7 @@ int lua_callyieldable(lua_State* L, int nargs, int nresults)
 
 int lua_pcallyieldable(lua_State* L, int nargs, int nresults, int errfunc)
 {
+    api_checknoerror(L);
     api_check(L, iscfunction(L->ci->func));
     Closure* cl = clvalue(L->ci->func);
     api_check(L, cl->c.cont);
@@ -1277,6 +1405,7 @@ int lua_pcallyieldable(lua_State* L, int nargs, int nresults, int errfunc)
     ptrdiff_t savederrfunc = errfunc != 0 ? savestack(L, L->base + (errfunc - 1)) : 0;
 
     int status = luaD_pcall(L, &CallContext::run, &ctx, savedfunc, savederrfunc);
+    luaD_propagate(L, LUA_RAISED);
 
     // necessary to accommodate functions that return lots of values
     expandstacklimit(L, L->top);
@@ -1293,11 +1422,13 @@ int lua_pcallyieldable(lua_State* L, int nargs, int nresults, int errfunc)
 
 int lua_status(lua_State* L)
 {
+    api_checknoerror(L);
     return L->status;
 }
 
 int lua_costatus(lua_State* L, lua_State* co)
 {
+    api_checknoerror(L);
     api_check(L, co != nullptr);
     api_check(L, L->global == co->global);
 
@@ -1318,54 +1449,99 @@ int lua_costatus(lua_State* L, lua_State* co)
 
 int lua_hasfinalizers(lua_State* L)
 {
-    LUAU_ASSERT(FFlag::DebugLuauCoroutineFinally);
+    api_checknoerror(L);
+    LUAU_ASSERT(FFlag::LuauCoroutineFinally);
 
     return L->finalizers ? 1 : 0;
 }
 
 static int runfinalizery(lua_State* L)
 {
-    lua_State* co = lua_tothread(L, 1);
-    api_check(L, co != nullptr && co != L);
-    api_check(L, L->global == co->global);
-    api_check(L, co->status != LUA_YIELD && co->status != LUA_BREAK);
-    api_check(L, co->finalizers != nullptr);
+    lua_State* co = lua_tothread(L, lua_upvalueindex(1));
+    FinallyResult result = (FinallyResult)lua_tointeger(L, lua_upvalueindex(2));
 
-    luaD_preparefinalize(L, co);
-    return luaD_runfinalizers(L, /* toclose */ false, /* returnstatus */ false);
+    if (!co)
+        luaG_raiserunerror(L, LUA_RAISED, "finalizer function has already been called");
+
+    if (co == L)
+        luaG_raiserunerror(L, LUA_RAISED, "cannot finalize running thread");
+
+    if (!co->finalizers)
+        luaG_raiserunerror(L, LUA_RAISED, "coroutine has no pending finalizers");
+
+    // luaD_runfinalizers expects a thread, followed by the finalizer state
+    lua_settop(L, 0);
+    luaD_propagate(L, LUA_RAISED);
+    lua_pushvalue(L, lua_upvalueindex(1));
+    luaD_propagate(L, LUA_RAISED);
+
+    // clear the thread upvalue so that future calls will error immediately
+    setnilvalue(index2addr(L, lua_upvalueindex(1)));
+
+    if (result == FinallyResult::Cancelled)
+    {
+        luaD_preparefinalizestate(L, co, result);
+        lua_resetthread(co);
+        luaD_propagate(L, LUA_RAISED);
+    }
+    else
+    {
+        luaD_preparefinalize(L, co, result);
+        luaD_propagate(L, LUA_RAISED);
+    }
+
+    return luaD_runfinalizers(L, /* returnstatus */ false);
 }
 
 static int runfinalizercont(lua_State* L, int status)
 {
     if (status != LUA_OK)
-        luaD_throw(L, status);
+        luaD_raise(L, LUA_RAISED, status);
 
-    return luaD_runfinalizers(L, /* toclose */ false, /* returnstatus */ false);
+    return luaD_runfinalizers(L, /* returnstatus */ false);
 }
 
-void lua_pushfinalizerfunction(lua_State* L)
+void lua_pushfinalizerfunction(lua_State* L, lua_State* co, int toclose)
 {
-    LUAU_ASSERT(FFlag::DebugLuauCoroutineFinally);
+    api_checknoerror(L);
+    LUAU_ASSERT(FFlag::LuauCoroutineFinally);
 
-    luaC_threadbarrier(L);
     api_check(L, L->status == LUA_OK);
+    api_check(L, co != nullptr && co != L);
+    api_check(L, L->global == co->global);
+    api_check(L, co->finalizers != nullptr);
 
-    lua_pushcclosurek(L, runfinalizery, "finalize", 0, runfinalizercont);
+    if (toclose)
+        api_check(L, co->status == LUA_OK || co->status == LUA_YIELD);
+    else
+        api_check(L, co->status != LUA_YIELD && co->status != LUA_BREAK);
+
+    // push thread
+    luaC_threadbarrier(L);
+    ensure_stack(L, 1);
+    setthvalue(L, L->top, co);
+    api_incr_top(L);
+
+    lua_pushinteger(L, toclose ? FinallyResult::Cancelled : (co->status == LUA_OK ? FinallyResult::Finished : FinallyResult::Error));
+    luaD_propagate(L);
+
+    lua_pushcclosurek(L, runfinalizery, "finalize", 2, runfinalizercont);
 }
 
 void lua_addfinalizer(lua_State* L, lua_State* co, int idx)
 {
-    LUAU_ASSERT(FFlag::DebugLuauCoroutineFinally);
+    api_checknoerror(L);
+    LUAU_ASSERT(FFlag::LuauCoroutineFinally);
 
     api_check(L, co != nullptr);
     api_check(L, !lua_isnoneornil(L, idx));
 
     if (co == lua_mainthread(L))
-        luaG_runerror(L, "cannot register a finalizer on the main thread");
+        luaG_raiserunerror(L, , "cannot register a finalizer on the main thread");
 
     int status = lua_costatus(L, co);
     if (status == LUA_COFIN || status == LUA_COERR)
-        luaG_runerror(L, "cannot register a finalizer on dead coroutine");
+        luaG_raiserunerror(L, , "cannot register a finalizer on dead coroutine");
 
     if (LUAU_UNLIKELY(!!L->global->cb.userfinalizer))
         L->global->cb.userfinalizer(L, co);
@@ -1376,22 +1552,26 @@ void lua_addfinalizer(lua_State* L, lua_State* co, int idx)
     if (co->finalizers == nullptr)
     {
         co->finalizers = luaH_new(L, 1, 0);
+        luaD_propagate(L);
         luaC_objbarrier(L, co, co->finalizers);
     }
 
     // add a new item
     TValue* slot = luaH_setnum(L, co->finalizers, luaH_getn(co->finalizers) + 1);
+    luaD_propagate(L);
     setobj2t(L, slot, cb);
     luaC_barriert(L, co->finalizers, cb);
 }
 
 void* lua_getthreaddata(lua_State* L)
 {
+    api_checknoerror(L);
     return L->userdata;
 }
 
 void lua_setthreaddata(lua_State* L, void* data)
 {
+    api_checknoerror(L);
     L->userdata = data;
 }
 
@@ -1401,6 +1581,7 @@ void lua_setthreaddata(lua_State* L, void* data)
 
 int lua_gc(lua_State* L, int what, int data)
 {
+    api_checknoerror(L);
     int res = 0;
     condhardmemtests(luaC_validate(L), 1);
     global_State* g = L->global;
@@ -1534,6 +1715,7 @@ int lua_gc(lua_State* L, int what, int data)
 
 void lua_memorydump(lua_State* L, void* file, lua_CategoryName categoryName)
 {
+    api_checknoerror(L);
     api_check(L, file != nullptr);
 
     luaC_dump(L, file, categoryName);
@@ -1543,6 +1725,27 @@ void lua_memorydump(lua_State* L, void* file, lua_CategoryName categoryName)
 ** miscellaneous functions
 */
 
+#if LUAU_ERRORS_AS_RETURNS
+int lua_raiseerror(lua_State* L)
+{
+    api_checknelems(L, 1);
+
+    luaD_seterror(L, LUA_ERRRUN);
+    return LUA_RAISED;
+}
+
+int lua_haserror(lua_State* L)
+{
+    return L->global->errcode;
+}
+#else
+int lua_raiseerror(lua_State* L)
+{
+    api_checknelems(L, 1);
+
+    luaD_throw(L, LUA_ERRRUN);
+}
+
 l_noret lua_error(lua_State* L)
 {
     api_checknelems(L, 1);
@@ -1550,14 +1753,22 @@ l_noret lua_error(lua_State* L)
     luaD_throw(L, LUA_ERRRUN);
 }
 
+int lua_haserror(lua_State* L)
+{
+    return 0;
+}
+#endif
+
 int lua_next(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     api_checknelems(L, 1);
     luaC_threadbarrier(L);
-    ensure_stack(L, 1);
+    ensure_stack(L, 1, 0);
     StkId t = index2addr(L, idx);
     api_check(L, ttistable(t));
     int more = luaH_next(L, hvalue(t), L->top - 1);
+    luaD_propagate(L, 0);
     if (more)
     {
         api_incr_top(L);
@@ -1569,8 +1780,9 @@ int lua_next(lua_State* L, int idx)
 
 int lua_rawiter(lua_State* L, int idx, int iter)
 {
+    api_checknoerror(L);
     luaC_threadbarrier(L);
-    ensure_stack(L, 2);
+    ensure_stack(L, 2, -1);
     StkId t = index2addr(L, idx);
     api_check(L, ttistable(t));
     api_check(L, iter >= 0);
@@ -1616,6 +1828,7 @@ int lua_rawiter(lua_State* L, int idx, int iter)
 
 void lua_concat(lua_State* L, int n)
 {
+    api_checknoerror(L);
     api_check(L, n >= 0);
     api_checknelems(L, n);
     if (n >= 2)
@@ -1623,13 +1836,16 @@ void lua_concat(lua_State* L, int n)
         luaC_checkGC(L);
         luaC_threadbarrier(L);
         luaV_concat(L, n, cast_int(L->top - L->base) - 1);
+        luaD_propagate(L);
         L->top -= (n - 1);
     }
     else if (n == 0)
     { // push empty string
         luaC_threadbarrier(L);
         ensure_stack(L, 1);
-        setsvalue(L, L->top, luaS_newlstr(L, "", 0));
+        TString* str = luaS_newlstr(L, "", 0);
+        luaD_propagate(L);
+        setsvalue(L, L->top, str);
         api_incr_top(L);
     }
     // else n == 1; nothing to do
@@ -1637,11 +1853,13 @@ void lua_concat(lua_State* L, int n)
 
 void* lua_newuserdatatagged(lua_State* L, size_t sz, int tag)
 {
+    api_checknoerror(L);
     api_check(L, unsigned(tag) < LUA_UTAG_LIMIT || tag == UTAG_PROXY);
     luaC_checkGC(L);
     luaC_threadbarrier(L);
-    ensure_stack(L, 1);
+    ensure_stack(L, 1, nullptr);
     Udata* u = luaU_newudata(L, sz, tag);
+    luaD_propagate(L, nullptr);
     setuvalue(L, L->top, u);
     api_incr_top(L);
     return u->data;
@@ -1649,11 +1867,13 @@ void* lua_newuserdatatagged(lua_State* L, size_t sz, int tag)
 
 void* lua_newuserdatataggedwithmetatable(lua_State* L, size_t sz, int tag)
 {
+    api_checknoerror(L);
     api_check(L, unsigned(tag) < LUA_UTAG_LIMIT);
     luaC_checkGC(L);
     luaC_threadbarrier(L);
-    ensure_stack(L, 1);
+    ensure_stack(L, 1, nullptr);
     Udata* u = luaU_newudata(L, sz, tag);
+    luaD_propagate(L, nullptr);
 
     // currently, we always allocate unmarked objects, so forward barrier can be skipped
     LUAU_ASSERT(!isblack(obj2gco(u)));
@@ -1670,13 +1890,15 @@ void* lua_newuserdatataggedwithmetatable(lua_State* L, size_t sz, int tag)
 
 void* lua_newuserdatadtor(lua_State* L, size_t sz, lua_Destructor dtor)
 {
+    api_checknoerror(L);
     api_check(L, dtor != nullptr);
     luaC_checkGC(L);
     luaC_threadbarrier(L);
-    ensure_stack(L, 1);
+    ensure_stack(L, 1, nullptr);
     // make sure sz + sizeof(dtor) doesn't overflow; luaU_newdata will reject SIZE_MAX correctly
     size_t as = sz < SIZE_MAX - sizeof(dtor) ? sz + sizeof(dtor) : SIZE_MAX;
     Udata* u = luaU_newudata(L, as, UTAG_IDTOR);
+    luaD_propagate(L, nullptr);
     memcpy(&u->data + sz, &dtor, sizeof(dtor));
     setuvalue(L, L->top, u);
     api_incr_top(L);
@@ -1685,10 +1907,12 @@ void* lua_newuserdatadtor(lua_State* L, size_t sz, lua_Destructor dtor)
 
 void* lua_newbuffer(lua_State* L, size_t sz)
 {
+    api_checknoerror(L);
     luaC_checkGC(L);
     luaC_threadbarrier(L);
-    ensure_stack(L, 1);
+    ensure_stack(L, 1, nullptr);
     Buffer* b = luaB_newbuffer(L, sz);
+    luaD_propagate(L, nullptr);
     setbufvalue(L, L->top, b);
     api_incr_top(L);
     return b->data;
@@ -1722,8 +1946,9 @@ static const char* aux_upvalue(StkId fi, int n, TValue** val)
 
 const char* lua_getupvalue(lua_State* L, int funcindex, int n)
 {
+    api_checknoerror(L);
     luaC_threadbarrier(L);
-    ensure_stack(L, 1);
+    ensure_stack(L, 1, nullptr);
     TValue* val;
     const char* name = aux_upvalue(index2addr(L, funcindex), n, &val);
     if (name)
@@ -1736,6 +1961,7 @@ const char* lua_getupvalue(lua_State* L, int funcindex, int n)
 
 const char* lua_setupvalue(lua_State* L, int funcindex, int n)
 {
+    api_checknoerror(L);
     api_checknelems(L, 1);
     StkId fi = index2addr(L, funcindex);
     TValue* val;
@@ -1752,11 +1978,13 @@ const char* lua_setupvalue(lua_State* L, int funcindex, int n)
 
 int lua_hascustomexecution(lua_State* L, int level)
 {
+    api_checknoerror(L);
     return luaG_hasnative(L, level);
 }
 
 int lua_incustomexecution(lua_State* L, int level)
 {
+    api_checknoerror(L);
     return luaG_isnative(L, level);
 }
 
@@ -1803,6 +2031,7 @@ static uint64_t siphash24(uint64_t k0, uint64_t k1, uint32_t input)
 
 void lua_setpointerencodekey(lua_State* L, uint64_t a, uint64_t b, uint64_t c, uint64_t d)
 {
+    api_checknoerror(L);
     global_State* g = L->global;
 
     if (FFlag::LuauNewPointerEncode)
@@ -1830,6 +2059,7 @@ void lua_setpointerencodekey(lua_State* L, uint64_t a, uint64_t b, uint64_t c, u
 
 uintptr_t lua_encodepointer(lua_State* L, uintptr_t p)
 {
+    api_checknoerror(L);
     global_State* g = L->global;
 
     if (FFlag::LuauNewPointerEncode)
@@ -1866,6 +2096,7 @@ uintptr_t lua_encodepointer(lua_State* L, uintptr_t p)
 
 int lua_ref(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     api_check(L, idx != LUA_REGISTRYINDEX); // idx is a stack index for value
     int ref = LUA_REFNIL;
     global_State* g = L->global;
@@ -1885,6 +2116,7 @@ int lua_ref(lua_State* L, int idx)
         }
 
         TValue* slot = luaH_setnum(L, reg, ref);
+        luaD_propagate(L, LUA_NOREF);
         if (g->registryfree != 0)
             g->registryfree = int(nvalue(slot));
         setobj2t(L, slot, p);
@@ -1895,6 +2127,7 @@ int lua_ref(lua_State* L, int idx)
 
 int lua_unref(lua_State* L, int ref)
 {
+    api_checknoerror(L);
     if (ref <= LUA_REFNIL)
         return LUA_NOREF;
 
@@ -1916,6 +2149,7 @@ int lua_unref(lua_State* L, int ref)
 
 void lua_setuserdatatag(lua_State* L, int idx, int tag)
 {
+    api_checknoerror(L);
     api_check(L, unsigned(tag) < LUA_UTAG_LIMIT);
     StkId o = index2addr(L, idx);
     api_check(L, ttisuserdata(o));
@@ -1924,18 +2158,21 @@ void lua_setuserdatatag(lua_State* L, int idx, int tag)
 
 void lua_setuserdatadtor(lua_State* L, int tag, lua_Destructor dtor)
 {
+    api_checknoerror(L);
     api_check(L, unsigned(tag) < LUA_UTAG_LIMIT);
     L->global->udatagc[tag] = dtor;
 }
 
 lua_Destructor lua_getuserdatadtor(lua_State* L, int tag)
 {
+    api_checknoerror(L);
     api_check(L, unsigned(tag) < LUA_UTAG_LIMIT);
     return L->global->udatagc[tag];
 }
 
 void lua_setuserdatamark(lua_State* L, int tag, lua_UserdataMark markfn)
 {
+    api_checknoerror(L);
     LUAU_ASSERT(FFlag::LuauGcTraceUdata);
     api_check(L, unsigned(tag) < LUA_UTAG_LIMIT);
     L->global->udatamark[tag] = markfn;
@@ -1943,12 +2180,14 @@ void lua_setuserdatamark(lua_State* L, int tag, lua_UserdataMark markfn)
 
 void lua_setembeddergc(lua_State* L, lua_EmbedderGc fn)
 {
+    api_checknoerror(L);
     LUAU_ASSERT(FFlag::LuauGcTraceUdata);
     L->global->embeddergc = fn;
 }
 
 int lua_weakref(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     LUAU_ASSERT(FFlag::LuauGcTraceUdata);
     api_check(L, idx != LUA_REGISTRYINDEX); // idx is a stack index for value
     int ref = LUA_REFNIL;
@@ -1964,6 +2203,7 @@ int lua_weakref(lua_State* L, int idx)
         { // reuse existing slot
             ref = weakregistryfree;
             slot = luaH_setnum(L, weakregistry, ref);
+            luaD_propagate(L, LUA_NOREF);
             weakregistryfree = int(nvalue(slot));
         }
         else
@@ -1972,6 +2212,7 @@ int lua_weakref(lua_State* L, int idx)
             // "holes" that are unsafe to reuse until lua_weakunref is called
             ref = ++g->weakregistrytop;
             slot = luaH_setnum(L, weakregistry, ref);
+            luaD_propagate(L, LUA_NOREF);
         }
 
         setobj2t(L, slot, p);
@@ -1982,6 +2223,7 @@ int lua_weakref(lua_State* L, int idx)
 
 int lua_weakunref(lua_State* L, int ref)
 {
+    api_checknoerror(L);
     LUAU_ASSERT(FFlag::LuauGcTraceUdata);
     if (ref <= LUA_REFNIL)
         return LUA_NOREF;
@@ -1991,6 +2233,7 @@ int lua_weakunref(lua_State* L, int ref)
     LuaTable* weakregistry = hvalue(&g->weakregistry);
 
     TValue* slot = luaH_setnum(L, weakregistry, ref);
+    luaD_propagate(L, LUA_NOREF);
 
     // NB: no barrier needed because value isn't collectable
     setnvalue(slot, g->weakregistryfree);
@@ -2001,9 +2244,10 @@ int lua_weakunref(lua_State* L, int ref)
 
 int lua_getweakref(lua_State* L, int ref)
 {
+    api_checknoerror(L);
     LUAU_ASSERT(FFlag::LuauGcTraceUdata);
     luaC_threadbarrier(L);
-    ensure_stack(L, 1);
+    ensure_stack(L, 1, LUA_TNIL);
     LuaTable* wr = hvalue(&L->global->weakregistry);
     setobj2s(L, L->top, luaH_getnum(wr, ref));
     api_incr_top(L);
@@ -2012,6 +2256,7 @@ int lua_getweakref(lua_State* L, int ref)
 
 void lua_setuserdatametatable(lua_State* L, int tag)
 {
+    api_checknoerror(L);
     api_checknelems(L, 1);
     api_check(L, unsigned(tag) < LUA_UTAG_LIMIT);
     api_check(L, !L->global->udatamt[tag]); // reassignment not supported
@@ -2022,6 +2267,7 @@ void lua_setuserdatametatable(lua_State* L, int tag)
 
 void lua_getuserdatametatable(lua_State* L, int tag)
 {
+    api_checknoerror(L);
     api_check(L, unsigned(tag) < LUA_UTAG_LIMIT);
     luaC_threadbarrier(L);
     ensure_stack(L, 1);
@@ -2040,6 +2286,7 @@ void lua_getuserdatametatable(lua_State* L, int tag)
 
 const char* lua_getuserdataname(lua_State* L, int tag)
 {
+    api_checknoerror(L);
     api_check(L, unsigned(tag) < LUA_UTAG_LIMIT);
 
     const char* tname = "userdata";
@@ -2096,17 +2343,20 @@ int lua_registeruserdatadirectaccess(
 
 void lua_setlightuserdataname(lua_State* L, int tag, const char* name)
 {
+    api_checknoerror(L);
     api_check(L, unsigned(tag) < LUA_LUTAG_LIMIT);
     api_check(L, !L->global->lightuserdataname[tag]); // renaming not supported
     if (!L->global->lightuserdataname[tag])
     {
         L->global->lightuserdataname[tag] = luaS_new(L, name);
+        luaD_propagate(L);
         luaS_fix(L->global->lightuserdataname[tag]); // never collect these names
     }
 }
 
 const char* lua_getlightuserdataname(lua_State* L, int tag)
 {
+    api_checknoerror(L);
     api_check(L, unsigned(tag) < LUA_LUTAG_LIMIT);
     const TString* name = L->global->lightuserdataname[tag];
     return name ? getstr(name) : nullptr;
@@ -2114,6 +2364,7 @@ const char* lua_getlightuserdataname(lua_State* L, int tag)
 
 void lua_clonefunction(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     luaC_checkGC(L);
     luaC_threadbarrier(L);
     ensure_stack(L, 1);
@@ -2121,6 +2372,7 @@ void lua_clonefunction(lua_State* L, int idx)
     api_check(L, isLfunction(p));
     Closure* cl = clvalue(p);
     Closure* newcl = luaF_newLclosure(L, cl->nupvalues, L->gt, cl->l.p);
+    luaD_propagate(L);
     for (int i = 0; i < cl->nupvalues; ++i)
         setobj2n(L, &newcl->l.uprefs[i], &cl->l.uprefs[i]);
     setclvalue(L, L->top, newcl);
@@ -2129,6 +2381,7 @@ void lua_clonefunction(lua_State* L, int idx)
 
 int lua_usesexport(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     StkId o = index2addr(L, idx);
     if (!isLfunction(o))
         return 0;
@@ -2138,16 +2391,18 @@ int lua_usesexport(lua_State* L, int idx)
 
 void lua_cleartable(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     StkId t = index2addr(L, idx);
     api_check(L, ttistable(t));
     LuaTable* tt = hvalue(t);
     if (tt->readonly)
-        luaG_readonlyerror(L);
+        luaG_raisereadonlyerror(L, );
     luaH_clear(tt);
 }
 
 void lua_clonetable(lua_State* L, int idx)
 {
+    api_checknoerror(L);
     luaC_checkGC(L);
     luaC_threadbarrier(L);
 
@@ -2156,34 +2411,40 @@ void lua_clonetable(lua_State* L, int idx)
     api_check(L, ttistable(t));
 
     LuaTable* tt = luaH_clone(L, hvalue(t));
+    luaD_propagate(L);
     sethvalue(L, L->top, tt);
     api_incr_top(L);
 }
 
 lua_Callbacks* lua_callbacks(lua_State* L)
 {
+    api_checknoerror(L);
     return &L->global->cb;
 }
 
 void lua_setmemcat(lua_State* L, int category)
 {
+    api_checknoerror(L);
     api_check(L, unsigned(category) < LUA_MEMORY_CATEGORIES);
     L->activememcat = uint8_t(category);
 }
 
 size_t lua_totalbytes(lua_State* L, int category)
 {
+    api_checknoerror(L);
     api_check(L, category < LUA_MEMORY_CATEGORIES);
     return category < 0 ? L->global->totalbytes : L->global->memcatbytes[category];
 }
 
 int64_t lua_allocationrate(lua_State* L)
 {
+    api_checknoerror(L);
     return luaC_allocationrate(L);
 }
 
 lua_Alloc lua_getallocf(lua_State* L, void** ud)
 {
+    api_checknoerror(L);
     lua_Alloc f = L->global->frealloc;
     if (ud)
         *ud = L->global->ud;
@@ -2192,6 +2453,7 @@ lua_Alloc lua_getallocf(lua_State* L, void** ud)
 
 void lua_registeruserdatadirectfieldget(lua_State* L, int tag, const char* field, lua_UserdataDirectFieldGet fn)
 {
+    api_checknoerror(L);
     api_check(L, unsigned(tag) < LUA_UTAG_LIMIT);
     api_check(L, field != nullptr);
     api_check(L, fn != nullptr);
@@ -2199,12 +2461,17 @@ void lua_registeruserdatadirectfieldget(lua_State* L, int tag, const char* field
     global_State* g = L->global;
 
     if (g->udatadirectfields[tag] == nullptr)
+    {
         g->udatadirectfields[tag] = luaH_new(L, 0, 1);
+        luaD_propagate(L);
+    }
 
     TString* ts = luaS_new(L, field);
+    luaD_propagate(L);
     luaS_fix(ts);
 
     TValue* slot = luaH_setstr(L, g->udatadirectfields[tag], ts);
+    luaD_propagate(L);
     setpvalue(slot, reinterpret_cast<void*>(fn), 0);
 }
 

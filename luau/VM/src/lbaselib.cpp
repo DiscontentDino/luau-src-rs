@@ -27,6 +27,7 @@ static int luaB_print(lua_State* L)
     {
         size_t l;
         const char* s = luaL_tolstring(L, i, &l); // convert to string using __tostring et al
+        luaL_propagate(L);
         if (i > 1)
             writestring("\t", 1);
         writestring(s, l);
@@ -38,7 +39,9 @@ static int luaB_print(lua_State* L)
 
 static int luaB_tonumber(lua_State* L)
 {
-    int base = luaL_optinteger(L, 2, 10);
+    int base;
+    if (!luaL_requireoptinteger(L, 2, 10, &base))
+        return LUA_RAISED;
     if (base == 10)
     { // standard conversion
         int isnum = 0;
@@ -48,12 +51,15 @@ static int luaB_tonumber(lua_State* L)
             lua_pushnumber(L, n);
             return 1;
         }
-        luaL_checkany(L, 1); // error if we don't have any argument
+        if (!luaL_requireany(L, 1)) // error if we don't have any argument
+            return LUA_RAISED;
     }
     else
     {
-        const char* s1 = luaL_checkstring(L, 1);
-        luaL_argcheck(L, 2 <= base && base <= 36, 2, "base out of range");
+        const char* s1;
+        if (!luaL_requirestring(L, 1, &s1))
+            return LUA_RAISED;
+        luaL_argrequire(L, 2 <= base && base <= 36, 2, "base out of range");
         char* s2;
         unsigned long long n;
         n = strtoull(s1, &s2, base);
@@ -74,20 +80,25 @@ static int luaB_tonumber(lua_State* L)
 
 static int luaB_error(lua_State* L)
 {
-    int level = luaL_optinteger(L, 2, 1);
+    int level;
+    if (!luaL_requireoptinteger(L, 2, 1, &level))
+        return LUA_RAISED;
     lua_settop(L, 1);
     if (lua_isstring(L, 1) && level > 0)
     { // add extra information?
         luaL_where(L, level);
+        luaL_propagate(L);
         lua_pushvalue(L, 1);
         lua_concat(L, 2);
+        luaL_propagate(L);
     }
-    lua_error(L);
+    return lua_raiseerror(L);
 }
 
 static int luaB_getmetatable(lua_State* L)
 {
-    luaL_checkany(L, 1);
+    if (!luaL_requireany(L, 1))
+        return LUA_RAISED;
     if (!lua_getmetatable(L, 1))
     {
         lua_pushnil(L);
@@ -100,34 +111,54 @@ static int luaB_getmetatable(lua_State* L)
 static int luaB_setmetatable(lua_State* L)
 {
     int t = lua_type(L, 2);
-    luaL_checktype(L, 1, LUA_TTABLE);
-    luaL_argexpected(L, t == LUA_TNIL || t == LUA_TTABLE, 2, "nil or table");
-    if (luaL_getmetafield(L, 1, "__metatable"))
-        luaL_error(L, "cannot change a protected metatable");
+    if (!luaL_requiretype(L, 1, LUA_TTABLE))
+        return LUA_RAISED;
+    luaL_argrequiretype(L, t == LUA_TNIL || t == LUA_TTABLE, 2, "nil or table");
+    int protectedmt = luaL_getmetafield(L, 1, "__metatable");
+    luaL_propagate(L);
+    if (protectedmt)
+        return luaL_raiseerror(L, "cannot change a protected metatable");
     lua_settop(L, 2);
     lua_setmetatable(L, 1);
     return 1;
 }
 
-static void getfunc(lua_State* L, int opt)
+static int getfunc(lua_State* L, int opt)
 {
     if (lua_isfunction(L, 1))
         lua_pushvalue(L, 1);
     else
     {
         lua_Debug ar;
-        int level = opt ? luaL_optinteger(L, 1, 1) : luaL_checkinteger(L, 1);
-        luaL_argcheck(L, level >= 0, 1, "level must be non-negative");
-        if (lua_getinfo(L, level, "f", &ar) == 0)
-            luaL_argerror(L, 1, "invalid level");
+        int level;
+        if (!(opt ? luaL_requireoptinteger(L, 1, 1, &level) : luaL_requireinteger(L, 1, &level)))
+            return 0;
+        if (!(level >= 0))
+        {
+            luaL_raiseargerror(L, 1, "level must be non-negative");
+            return 0;
+        }
+        int found = lua_getinfo(L, level, "f", &ar);
+        if (lua_haserror(L))
+            return 0;
+        if (found == 0)
+        {
+            luaL_raiseargerror(L, 1, "invalid level");
+            return 0;
+        }
         if (lua_isnil(L, -1))
-            luaL_error(L, "no function environment for tail call at level %d", level);
+        {
+            luaL_raiseerror(L, "no function environment for tail call at level %d", level);
+            return 0;
+        }
     }
+    return 1;
 }
 
 static int luaB_getfenv(lua_State* L)
 {
-    getfunc(L, 1);
+    if (!getfunc(L, 1))
+        return LUA_RAISED;
     if (lua_iscfunction(L, -1))             // is a C function?
         lua_pushvalue(L, LUA_GLOBALSINDEX); // return the thread's global env.
     else
@@ -138,8 +169,10 @@ static int luaB_getfenv(lua_State* L)
 
 static int luaB_setfenv(lua_State* L)
 {
-    luaL_checktype(L, 2, LUA_TTABLE);
-    getfunc(L, 0);
+    if (!luaL_requiretype(L, 2, LUA_TTABLE))
+        return LUA_RAISED;
+    if (!getfunc(L, 0))
+        return LUA_RAISED;
     lua_pushvalue(L, 2);
     lua_setsafeenv(L, -1, false);
     if (lua_isnumber(L, 1) && lua_tonumber(L, 1) == 0)
@@ -151,22 +184,26 @@ static int luaB_setfenv(lua_State* L)
         return 0;
     }
     else if (lua_iscfunction(L, -2) || lua_setfenv(L, -2) == 0)
-        luaL_error(L, "'setfenv' cannot change environment of given object");
+        return luaL_raiseerror(L, "'setfenv' cannot change environment of given object");
     return 1;
 }
 
 static int luaB_rawequal(lua_State* L)
 {
-    luaL_checkany(L, 1);
-    luaL_checkany(L, 2);
+    if (!luaL_requireany(L, 1))
+        return LUA_RAISED;
+    if (!luaL_requireany(L, 2))
+        return LUA_RAISED;
     lua_pushboolean(L, lua_rawequal(L, 1, 2));
     return 1;
 }
 
 static int luaB_rawget(lua_State* L)
 {
-    luaL_checktype(L, 1, LUA_TTABLE);
-    luaL_checkany(L, 2);
+    if (!luaL_requiretype(L, 1, LUA_TTABLE))
+        return LUA_RAISED;
+    if (!luaL_requireany(L, 2))
+        return LUA_RAISED;
     lua_settop(L, 2);
     lua_rawget(L, 1);
     return 1;
@@ -174,9 +211,12 @@ static int luaB_rawget(lua_State* L)
 
 static int luaB_rawset(lua_State* L)
 {
-    luaL_checktype(L, 1, LUA_TTABLE);
-    luaL_checkany(L, 2);
-    luaL_checkany(L, 3);
+    if (!luaL_requiretype(L, 1, LUA_TTABLE))
+        return LUA_RAISED;
+    if (!luaL_requireany(L, 2))
+        return LUA_RAISED;
+    if (!luaL_requireany(L, 3))
+        return LUA_RAISED;
     lua_settop(L, 3);
     lua_rawset(L, 1);
     return 1;
@@ -185,7 +225,7 @@ static int luaB_rawset(lua_State* L)
 static int luaB_rawlen(lua_State* L)
 {
     int tt = lua_type(L, 1);
-    luaL_argcheck(L, tt == LUA_TTABLE || tt == LUA_TSTRING, 1, "table or string expected");
+    luaL_argrequire(L, tt == LUA_TTABLE || tt == LUA_TSTRING, 1, "table or string expected");
     int len = lua_objlen(L, 1);
     lua_pushinteger(L, len);
     return 1;
@@ -199,7 +239,8 @@ static int luaB_gcinfo(lua_State* L)
 
 static int luaB_type(lua_State* L)
 {
-    luaL_checkany(L, 1);
+    if (!luaL_requireany(L, 1))
+        return LUA_RAISED;
     // resulting name doesn't differentiate between userdata types
     lua_pushstring(L, lua_typename(L, lua_type(L, 1)));
     return 1;
@@ -207,7 +248,8 @@ static int luaB_type(lua_State* L)
 
 static int luaB_typeof(lua_State* L)
 {
-    luaL_checkany(L, 1);
+    if (!luaL_requireany(L, 1))
+        return LUA_RAISED;
     // resulting name returns __type if specified unless the input is a newproxy-created userdata
     lua_pushstring(L, luaL_typename(L, 1));
     return 1;
@@ -215,9 +257,12 @@ static int luaB_typeof(lua_State* L)
 
 int luaB_next(lua_State* L)
 {
-    luaL_checktype(L, 1, LUA_TTABLE);
+    if (!luaL_requiretype(L, 1, LUA_TTABLE))
+        return LUA_RAISED;
     lua_settop(L, 2); // create a 2nd argument if there isn't one
-    if (lua_next(L, 1))
+    int more = lua_next(L, 1);
+    luaL_propagate(L);
+    if (more)
         return 2;
     else
     {
@@ -228,7 +273,8 @@ int luaB_next(lua_State* L)
 
 static int luaB_pairs(lua_State* L)
 {
-    luaL_checktype(L, 1, LUA_TTABLE);
+    if (!luaL_requiretype(L, 1, LUA_TTABLE))
+        return LUA_RAISED;
     lua_pushvalue(L, lua_upvalueindex(1)); // return generator,
     lua_pushvalue(L, 1);                   // state,
     lua_pushnil(L);                        // and initial value
@@ -237,8 +283,11 @@ static int luaB_pairs(lua_State* L)
 
 int luaB_inext(lua_State* L)
 {
-    int i = luaL_checkinteger(L, 2);
-    luaL_checktype(L, 1, LUA_TTABLE);
+    int i;
+    if (!luaL_requireinteger(L, 2, &i))
+        return LUA_RAISED;
+    if (!luaL_requiretype(L, 1, LUA_TTABLE))
+        return LUA_RAISED;
     i++; // next value
     lua_pushinteger(L, i);
     lua_rawgeti(L, 1, i);
@@ -247,7 +296,8 @@ int luaB_inext(lua_State* L)
 
 static int luaB_ipairs(lua_State* L)
 {
-    luaL_checktype(L, 1, LUA_TTABLE);
+    if (!luaL_requiretype(L, 1, LUA_TTABLE))
+        return LUA_RAISED;
     lua_pushvalue(L, lua_upvalueindex(1)); // return generator,
     lua_pushvalue(L, 1);                   // state,
     lua_pushinteger(L, 0);                 // and initial value
@@ -256,9 +306,15 @@ static int luaB_ipairs(lua_State* L)
 
 static int luaB_assert(lua_State* L)
 {
-    luaL_checkany(L, 1);
+    if (!luaL_requireany(L, 1))
+        return LUA_RAISED;
     if (!lua_toboolean(L, 1))
-        luaL_error(L, "%s", luaL_optstring(L, 2, "assertion failed!"));
+    {
+        const char* msg;
+        if (!luaL_requireoptstring(L, 2, "assertion failed!", &msg))
+            return LUA_RAISED;
+        return luaL_raiseerror(L, "%s", msg);
+    }
     return lua_gettop(L);
 }
 
@@ -272,19 +328,22 @@ static int luaB_select(lua_State* L)
     }
     else
     {
-        int i = luaL_checkinteger(L, 1);
+        int i;
+        if (!luaL_requireinteger(L, 1, &i))
+            return LUA_RAISED;
         if (i < 0)
             i = n + i;
         else if (i > n)
             i = n;
-        luaL_argcheck(L, 1 <= i, 1, "index out of range");
+        luaL_argrequire(L, 1 <= i, 1, "index out of range");
         return n - i;
     }
 }
 
 static int luaB_pcally(lua_State* L)
 {
-    luaL_checkany(L, 1);
+    if (!luaL_requireany(L, 1))
+        return LUA_RAISED;
 
     return lua_pcallyieldable(L, lua_gettop(L) - 1, LUA_MULTRET, 0);
 }
@@ -294,6 +353,7 @@ static int luaB_pcallcont(lua_State* L, int status)
     if (FFlag::LuauPcallOptimize)
     {
         luaD_checkstack(L, 1);
+        luaD_propagate(L, LUA_RAISED);
 
         if (status == 0)
         {
@@ -327,6 +387,7 @@ static int luaB_pcallcont(lua_State* L, int status)
         if (status == 0)
         {
             lua_rawcheckstack(L, 1);
+            luaL_propagate(L);
             lua_pushboolean(L, true);
             lua_insert(L, 1); // insert status before all results
             return lua_gettop(L);
@@ -334,6 +395,7 @@ static int luaB_pcallcont(lua_State* L, int status)
         else
         {
             lua_rawcheckstack(L, 1);
+            luaL_propagate(L);
             lua_pushboolean(L, false);
             lua_insert(L, -2); // insert status before error object
             return 2;
@@ -343,7 +405,8 @@ static int luaB_pcallcont(lua_State* L, int status)
 
 static int luaB_xpcally(lua_State* L)
 {
-    luaL_checktype(L, 2, LUA_TFUNCTION);
+    if (!luaL_requiretype(L, 2, LUA_TFUNCTION))
+        return LUA_RAISED;
 
     // swap function & error function
     lua_pushvalue(L, 1);
@@ -371,6 +434,7 @@ static int luaB_xpcallcont(lua_State* L, int status)
         else
         {
             lua_rawcheckstack(L, 1);
+            luaL_propagate(L);
             lua_pushboolean(L, true);
             lua_replace(L, 1);    // replace error function with status
             return lua_gettop(L); // return status + all results
@@ -381,6 +445,7 @@ static int luaB_xpcallcont(lua_State* L, int status)
         if (FFlag::LuauPcallOptimize)
         {
             luaD_checkstack(L, 1);
+            luaD_propagate(L, LUA_RAISED);
 
             StkId top = L->top;
 
@@ -395,6 +460,7 @@ static int luaB_xpcallcont(lua_State* L, int status)
         else
         {
             lua_rawcheckstack(L, 1);
+            luaL_propagate(L);
             lua_pushboolean(L, false);
             lua_insert(L, -2); // place status before the error that was on top of the stack
             return 2;
@@ -404,7 +470,8 @@ static int luaB_xpcallcont(lua_State* L, int status)
 
 static int luaB_tostring(lua_State* L)
 {
-    luaL_checkany(L, 1);
+    if (!luaL_requireany(L, 1))
+        return LUA_RAISED;
     luaL_tolstring(L, 1, NULL);
     return 1;
 }
@@ -412,15 +479,17 @@ static int luaB_tostring(lua_State* L)
 static int luaB_newproxy(lua_State* L)
 {
     int t = lua_type(L, 1);
-    luaL_argexpected(L, t == LUA_TNONE || t == LUA_TNIL || t == LUA_TBOOLEAN, 1, "nil or boolean");
+    luaL_argrequiretype(L, t == LUA_TNONE || t == LUA_TNIL || t == LUA_TBOOLEAN, 1, "nil or boolean");
 
     bool needsmt = lua_toboolean(L, 1);
 
     lua_newuserdatatagged(L, 0, UTAG_PROXY);
+    luaL_propagate(L);
 
     if (needsmt)
     {
         lua_newtable(L);
+        luaL_propagate(L);
         lua_setmetatable(L, -2);
     }
 
@@ -453,7 +522,9 @@ static const luaL_Reg base_funcs[] = {
 static void auxopen(lua_State* L, const char* name, lua_CFunction f, lua_CFunction u)
 {
     lua_pushcfunction(L, u, NULL);
+    luaD_propagate(L);
     lua_pushcclosure(L, f, name, 1);
+    luaD_propagate(L);
     lua_setfield(L, -2, name);
 }
 
@@ -462,24 +533,33 @@ int luaopen_base(lua_State* L)
     // set global _G
     lua_pushvalue(L, LUA_GLOBALSINDEX);
     lua_setglobal(L, "_G");
+    luaL_propagate(L);
 
     // open lib into global table
     luaL_register(L, "_G", base_funcs);
+    luaL_propagate(L);
     lua_pushliteral(L, "Luau");
+    luaL_propagate(L);
     lua_setglobal(L, "_VERSION"); // set global _VERSION
+    luaL_propagate(L);
 
     // `ipairs' and `pairs' need auxiliary functions as upvalues
     auxopen(L, "ipairs", luaB_ipairs, luaB_inext);
+    luaL_propagate(L);
     auxopen(L, "pairs", luaB_pairs, luaB_next);
+    luaL_propagate(L);
 
     lua_pushcclosurek(L, luaB_pcally, "pcall", 0, luaB_pcallcont);
+    luaL_propagate(L);
 
     if (FFlag::LuauFastpcall)
         L->global->builtinPcall = clvalue(luaA_toobject(L, -1));
 
     lua_setfield(L, -2, "pcall");
+    luaL_propagate(L);
 
     lua_pushcclosurek(L, luaB_xpcally, "xpcall", 0, luaB_xpcallcont);
+    luaL_propagate(L);
 
     if (FFlag::LuauFastpcall)
         L->global->builtinXpcall = clvalue(luaA_toobject(L, -1));

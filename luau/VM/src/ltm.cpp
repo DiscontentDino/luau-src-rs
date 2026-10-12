@@ -83,11 +83,13 @@ void luaT_init(lua_State* L)
     for (i = 0; i < LUA_T_COUNT; i++)
     {
         L->global->ttname[i] = luaS_new(L, luaT_typenames[i]);
+        luaD_propagate(L);
         luaS_fix(L->global->ttname[i]); // never collect these names
     }
     for (i = 0; i < TM_N; i++)
     {
         L->global->tmname[i] = luaS_new(L, luaT_eventname[i]);
+        luaD_propagate(L);
         luaS_fix(L->global->tmname[i]); // never collect these names
     }
 }

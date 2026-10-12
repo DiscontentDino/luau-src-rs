@@ -192,7 +192,7 @@ void forgPrepXnextFallback(lua_State* L, TValue* ra, int pc)
     {
         L->ci->savedpc = L->ci->p->code + pc;
 
-        luaG_typeerror(L, ra, "iterate over");
+        luaG_raisetypeerror(L, , ra, "iterate over");
     }
 }
 
@@ -690,7 +690,7 @@ const Instruction* executeNAMECALL(lua_State* L, const Instruction* pc, StkId ba
         // recompute ra since stack might have been reallocated
         ra = VM_REG(LUAU_INSN_A(insn));
         if (ttisnil(ra))
-            luaG_methoderror(L, ra + 1, tsvalue(kv));
+            luaG_raisemethoderror(L, nullptr, ra + 1, tsvalue(kv));
     }
     else
     {
@@ -730,7 +730,7 @@ const Instruction* executeNAMECALL(lua_State* L, const Instruction* pc, StkId ba
                 // recompute ra since stack might have been reallocated
                 ra = VM_REG(LUAU_INSN_A(insn));
                 if (ttisnil(ra))
-                    luaG_methoderror(L, ra + 1, tsvalue(kv));
+                    luaG_raisemethoderror(L, nullptr, ra + 1, tsvalue(kv));
             }
         }
         else
@@ -741,7 +741,7 @@ const Instruction* executeNAMECALL(lua_State* L, const Instruction* pc, StkId ba
             // recompute ra since stack might have been reallocated
             ra = VM_REG(LUAU_INSN_A(insn));
             if (ttisnil(ra))
-                luaG_methoderror(L, ra + 1, tsvalue(kv));
+                luaG_raisemethoderror(L, nullptr, ra + 1, tsvalue(kv));
         }
     }
 
@@ -820,7 +820,7 @@ const Instruction* executeFORGPREP(lua_State* L, const Instruction* pc, StkId ba
             if (ttisnil(ra))
             {
                 VM_PROTECT_PC(); // next call always errors
-                luaG_typeerror(L, ra, "call");
+                luaG_raisetypeerror(L, nullptr, ra, "call");
             }
         }
         else if (fasttm(L, mt, TM_CALL))
@@ -838,7 +838,7 @@ const Instruction* executeFORGPREP(lua_State* L, const Instruction* pc, StkId ba
         else
         {
             VM_PROTECT_PC(); // next call always errors
-            luaG_typeerror(L, ra, "iterate over");
+            luaG_raisetypeerror(L, nullptr, ra, "iterate over");
         }
     }
 

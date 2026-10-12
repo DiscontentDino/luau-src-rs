@@ -132,8 +132,11 @@ const char* luaO_pushvfstring(lua_State* L, const char* fmt, va_list argp)
     char result[LUA_BUFFERSIZE];
     vsnprintf(result, sizeof(result), fmt, argp);
 
-    setsvalue(L, L->top, luaS_new(L, result));
+    TString* str = luaS_new(L, result);
+    luaD_propagate(L, nullptr);
+    setsvalue(L, L->top, str);
     incr_top(L);
+    luaD_propagate(L, nullptr);
     return svalue(L->top - 1);
 }
 

@@ -24,11 +24,20 @@
     else \
         condhardstacktests(luaD_reallocstack(L, L->stacksize - EXTRA_STACK, 0));
 
+#if LUAU_ERRORS_AS_RETURNS
+#define incr_top(L) \
+    { \
+        luaD_checkstack(L, 1); \
+        if (LUAU_LIKELY(!(L)->global->errcode)) \
+            L->top++; \
+    }
+#else
 #define incr_top(L) \
     { \
         luaD_checkstack(L, 1); \
         L->top++; \
     }
+#endif
 
 #define savestack(L, p) check_exp((p) >= L->stack && (p) <= L->stack + L->stacksize, (char*)(p) - (char*)L->stack)
 #define restorestack(L, n) check_exp((n) >= 0 && (size_t)(n) <= sizeof(TValue) * L->stacksize, (TValue*)((char*)L->stack + (n)))
@@ -47,6 +56,26 @@
 
 #define isyielded(L) ((L)->status == LUA_YIELD || (L)->status == LUA_BREAK || (L)->status == SCHEDULED_REENTRY)
 
+#if LUAU_ERRORS_AS_RETURNS
+#define luaD_raise(L, ret, errcode) \
+    do \
+    { \
+        luaD_seterror(L, errcode); \
+        return ret; \
+    } while (0)
+
+#define luaD_propagate(L, ...) \
+    do \
+    { \
+        if (LUAU_UNLIKELY((L)->global->errcode)) \
+            return __VA_ARGS__; \
+    } while (0)
+#else
+#define luaD_raise(L, ret, errcode) luaD_throw(L, errcode)
+
+#define luaD_propagate(L, ...) ((void)0)
+#endif
+
 // results from luaD_precall
 #define PCRLUA 0   // initiated a call to a Lua function
 #define PCRC 1     // did a call to a C function
@@ -59,6 +88,13 @@
 // reentry will remove extra call frames from C call stack and continue execution
 // this lua_State::status code is internal and should not be used by users
 #define SCHEDULED_REENTRY 0x7f
+
+enum FinallyResult
+{
+    Finished = 0,
+    Error = 1,
+    Cancelled = 2,
+};
 
 // type of protected functions, to be ran by `runprotected'
 typedef void (*Pfunc)(lua_State* L, void* ud);
@@ -75,9 +111,13 @@ LUAI_FUNC void luaD_reallocstack(lua_State* L, int newsize, int fornewci);
 LUAI_FUNC void luaD_growstack(lua_State* L, int n);
 LUAI_FUNC void luaD_checkCstack(lua_State* L);
 LUAI_FUNC void luaD_seterrorobj(lua_State* L, int errcode, StkId oldtop);
-LUAI_FUNC void luaD_preparefinalizestate(lua_State* L, lua_State* co, bool resulttrue);
-LUAI_FUNC void luaD_preparefinalize(lua_State* L, lua_State* co);
-LUAI_FUNC int luaD_runfinalizers(lua_State* L, bool toclose, bool returnstatus);
+LUAI_FUNC void luaD_preparefinalizestate(lua_State* L, lua_State* co, FinallyResult finresult);
+LUAI_FUNC void luaD_preparefinalize(lua_State* L, lua_State* co, FinallyResult finresult);
+LUAI_FUNC int luaD_runfinalizers(lua_State* L, bool returnstatus);
 
+#if LUAU_ERRORS_AS_RETURNS
+LUAI_FUNC void luaD_seterror(lua_State* L, int errcode);
+#else
 LUAI_FUNC l_noret luaD_throw(lua_State* L, int errcode);
+#endif
 LUAI_FUNC int luaD_rawrunprotected(lua_State* L, Pfunc f, void* ud);

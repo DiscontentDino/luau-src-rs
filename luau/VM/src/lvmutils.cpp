@@ -46,7 +46,9 @@ int luaV_tostring(lua_State* L, StkId obj)
         double n = nvalue(obj);
         char* e = luai_num2str(s, n);
         LUAU_ASSERT(e < s + sizeof(s));
-        setsvalue(L, obj, luaS_newlstr(L, s, e - s));
+        TString* str = luaS_newlstr(L, s, e - s);
+        luaD_propagate(L, 0);
+        setsvalue(L, obj, str);
         return 1;
     }
 }
@@ -62,12 +64,16 @@ const LUA_VECTOR_TYPE* luaV_tovector(const TValue* obj)
 static LUAU_FORCEINLINE void callTMluau(lua_State* L, StkId top, Closure* ccl, int nresults)
 {
     if (++L->nCcalls >= LUAI_MAXCCALLS)
+    {
         luaD_checkCstack(L);
+        luaD_propagate(L);
+    }
 
     ptrdiff_t funcoffset = savestack(L, top);
     Proto* p = getproto(ccl);
 
     CallInfo* ci = incr_ci(L);
+    luaD_propagate(L);
     ci->func = top;
     ci->p = p;
     ci->base = top + 1;
@@ -79,6 +85,7 @@ static LUAU_FORCEINLINE void callTMluau(lua_State* L, StkId top, Closure* ccl, i
     L->base = ci->base;
 
     luaD_checkstackfornewci(L, ccl->stacksize); // clobbers 'top'
+    luaD_propagate(L);
     LUAU_ASSERT(ci->top <= L->stack_last);
 
     StkId argi = L->top;
@@ -91,6 +98,7 @@ static LUAU_FORCEINLINE void callTMluau(lua_State* L, StkId top, Closure* ccl, i
         ci->flags |= LUA_CALLINFO_NATIVE;
 
     luau_execute(L);
+    luaD_propagate(L);
 
     // resume_continue is not handled here as metamethods are not yieldable
 
@@ -121,13 +129,16 @@ static StkId callTMres(lua_State* L, StkId res, const TValue* f, const TValue* p
         {
             L->top += 3;
             callTMluau(L, top, clvalue(top), 1);
+            luaD_propagate(L, nullptr);
         }
         else
         {
             luaD_checkstack(L, 3);
+            luaD_propagate(L, nullptr);
             StkId func = L->top;
             L->top += 3;
             luaD_call(L, func, 1);
+            luaD_propagate(L, nullptr);
         }
     }
     else
@@ -137,8 +148,10 @@ static StkId callTMres(lua_State* L, StkId res, const TValue* f, const TValue* p
         setobj2s(L, L->top + 1, p1); // 1st argument
         setobj2s(L, L->top + 2, p2); // 2nd argument
         luaD_checkstack(L, 3);
+        luaD_propagate(L, nullptr);
         L->top += 3;
         luaD_call(L, L->top - 3, 1);
+        luaD_propagate(L, nullptr);
     }
 
     res = restorestack(L, result);
@@ -175,6 +188,7 @@ static LUAU_NOINLINE void callTM(lua_State* L, const TValue* f, const TValue* p1
         else
         {
             luaD_checkstack(L, 4);
+            luaD_propagate(L);
             StkId func = L->top;
             L->top += 4;
             luaD_call(L, func, 0);
@@ -188,6 +202,7 @@ static LUAU_NOINLINE void callTM(lua_State* L, const TValue* f, const TValue* p1
         setobj2s(L, L->top + 2, p2); // 2nd argument
         setobj2s(L, L->top + 3, p3); // 3th argument
         luaD_checkstack(L, 4);
+        luaD_propagate(L);
         L->top += 4;
         luaD_call(L, L->top - 4, 0);
     }
@@ -242,7 +257,7 @@ void luaV_gettable(lua_State* L, const TValue* t, TValue* key, StkId val)
             // Class instances throw if you try to access a member that is not
             // present.
             if (ttisnil(offsettval))
-                luaG_missingmembererror(L, t, key);
+                luaG_raisemissingmembererror(L, , t, key);
 
             const uint32_t offset = uint32_t(nvalue(offsettval));
             setobj2s(L, val, luaR_lookupmemberatoffset(inst, offset));
@@ -256,7 +271,7 @@ void luaV_gettable(lua_State* L, const TValue* t, TValue* key, StkId val)
             // Class objects throw if you try to access a member that is not
             // present.
             if (ttisnil(res))
-                luaG_missingmembererror(L, t, key);
+                luaG_raisemissingmembererror(L, , t, key);
 
             const uint32_t offset = uint32_t(nvalue(res));
             LUAU_ASSERT(offset < lco->numberofallmembers);
@@ -272,13 +287,13 @@ void luaV_gettable(lua_State* L, const TValue* t, TValue* key, StkId val)
             //  local _ = Box.item
             //
             if (offset < lco->numberofinstancemembers)
-                luaG_missingmembererror(L, t, key);
+                luaG_raisemissingmembererror(L, , t, key);
 
             setobj2s(L, val, &lco->staticmembers[offset - lco->numberofinstancemembers]);
             return;
         }
         else if (ttisnil(tm = luaT_gettmbyobj(L, t, TM_INDEX)))
-            luaG_indexerror(L, t, key);
+            luaG_raiseindexerror(L, , t, key);
         if (ttisfunction(tm))
         {
             callTMres(L, val, tm, t, key);
@@ -286,7 +301,7 @@ void luaV_gettable(lua_State* L, const TValue* t, TValue* key, StkId val)
         }
         t = tm; // else repeat with `tm'
     }
-    luaG_runerror(L, "'__index' chain too long; possible loop");
+    luaG_raiserunerror(L, , "'__index' chain too long; possible loop");
 }
 
 void luaV_settable(lua_State* L, const TValue* t, TValue* key, StkId val)
@@ -306,10 +321,11 @@ void luaV_settable(lua_State* L, const TValue* t, TValue* key, StkId val)
             if (!ttisnil(oldval) || (tm = fasttm(L, h->metatable, TM_NEWINDEX)) == NULL)
             {
                 if (h->readonly)
-                    luaG_readonlyerror(L);
+                    luaG_raisereadonlyerror(L, );
 
                 // luaH_set would work but would repeat the lookup so we use luaH_setslot that can reuse oldval if it's safe
                 TValue* newval = luaH_setslot(L, h, oldval, key);
+                luaD_propagate(L);
 
                 L->cachedslot = gval2slot(h, newval); // remember slot to accelerate future lookups
 
@@ -325,17 +341,17 @@ void luaV_settable(lua_State* L, const TValue* t, TValue* key, StkId val)
             LuauObject* inst = objectvalue(t);
             const TValue* offset = luaH_get(inst->lclass->memberstooffset, key);
             if (ttisnil(offset))
-                luaG_missingmembererror(L, t, key);
+                luaG_raisemissingmembererror(L, , t, key);
             const uint32_t offsetnum = uint32_t(nvalue(offset));
             LUAU_ASSERT(offsetnum < inst->lclass->numberofallmembers);
             if (offsetnum >= inst->lclass->numberofinstancemembers)
-                luaG_indexerror(L, t, key);
+                luaG_raiseindexerror(L, , t, key);
             setobj2class(L, &inst->members[offsetnum], val);
             luaC_barrier(L, inst, val);
             return;
         }
         else if (ttisnil(tm = luaT_gettmbyobj(L, t, TM_NEWINDEX)))
-            luaG_indexerror(L, t, key);
+            luaG_raiseindexerror(L, , t, key);
 
         if (ttisfunction(tm))
         {
@@ -346,7 +362,7 @@ void luaV_settable(lua_State* L, const TValue* t, TValue* key, StkId val)
         setobj(L, &temp, tm); // avoid pointing inside table (may rehash)
         t = &temp;
     }
-    luaG_runerror(L, "'__newindex' chain too long; possible loop");
+    luaG_raiserunerror(L, , "'__newindex' chain too long; possible loop");
 }
 
 static int call_binTM(lua_State* L, const TValue* p1, const TValue* p2, StkId res, TMS event)
@@ -357,6 +373,7 @@ static int call_binTM(lua_State* L, const TValue* p1, const TValue* p2, StkId re
     if (ttisnil(tm))
         return 0;
     callTMres(L, res, tm, p1, p2);
+    luaD_propagate(L, 1);
     return 1;
 }
 
@@ -383,17 +400,18 @@ static int call_orderTM(lua_State* L, const TValue* p1, const TValue* p2, TMS ev
     if (ttisnil(tm1))
     {
         if (error)
-            luaG_ordererror(L, p1, p2, event);
+            luaG_raiseordererror(L, 0, p1, p2, event);
         return -1; // no metamethod?
     }
     tm2 = luaT_gettmbyobj(L, p2, event);
     if (!luaO_rawequalObj(tm1, tm2)) // different metamethods?
     {
         if (error)
-            luaG_ordererror(L, p1, p2, event);
+            luaG_raiseordererror(L, 0, p1, p2, event);
         return -1;
     }
     callTMres(L, L->top, tm1, p1, p2);
+    luaD_propagate(L, 0);
     return !l_isfalse(L->top);
 }
 
@@ -423,7 +441,7 @@ int luaV_strcmp(const TString* ls, const TString* rs)
 int luaV_lessthan(lua_State* L, const TValue* l, const TValue* r)
 {
     if (LUAU_UNLIKELY(ttype(l) != ttype(r)))
-        luaG_ordererror(L, l, r, TM_LT);
+        luaG_raiseordererror(L, 0, l, r, TM_LT);
     else if (LUAU_LIKELY(ttisnumber(l)))
         return luai_numlt(nvalue(l), nvalue(r));
     else if (ttisstring(l))
@@ -436,7 +454,7 @@ int luaV_lessequal(lua_State* L, const TValue* l, const TValue* r)
 {
     int res;
     if (ttype(l) != ttype(r))
-        luaG_ordererror(L, l, r, TM_LE);
+        luaG_raiseordererror(L, 0, l, r, TM_LE);
     else if (ttisnumber(l))
         return luai_numle(nvalue(l), nvalue(r));
     else if (ttisstring(l))
@@ -444,7 +462,8 @@ int luaV_lessequal(lua_State* L, const TValue* l, const TValue* r)
     else if ((res = call_orderTM(L, l, r, TM_LE)) != -1) // first try `le'
         return res;
     else if ((res = call_orderTM(L, r, l, TM_LT)) == -1) // error if not `lt'
-        luaG_ordererror(L, l, r, TM_LE);
+        luaG_raiseordererror(L, 0, l, r, TM_LE);
+    luaD_propagate(L, 0);
     return !res;
 }
 
@@ -494,6 +513,7 @@ int luaV_equalval(lua_State* L, const TValue* t1, const TValue* t2)
         return gcvalue(t1) == gcvalue(t2);
     }
     callTMres(L, L->top, tm, t1, t2); // call TM
+    luaD_propagate(L, 0);
     return !l_isfalse(L->top);
 }
 
@@ -503,13 +523,20 @@ void luaV_concat(lua_State* L, int total, int last)
     {
         StkId top = L->base + last + 1;
         int n = 2; // number of elements handled in this pass (at least 2)
-        if (!(ttisstring(top - 2) || ttisnumber(top - 2)) || !tostring(L, top - 1))
+        bool tostr = (ttisstring(top - 2) || ttisnumber(top - 2)) && tostring(L, top - 1);
+        luaD_propagate(L);
+
+        if (!tostr)
         {
             if (!call_binTM(L, top - 2, top - 1, top - 2, TM_CONCAT))
-                luaG_concaterror(L, top - 2, top - 1);
+                luaG_raiseconcaterror(L, , top - 2, top - 1);
+            luaD_propagate(L);
         }
         else if (tsvalue(top - 1)->len == 0) // second op is empty?
-            (void)tostring(L, top - 2);      // result is first op (as string)
+        {
+            (void)tostring(L, top - 2); // result is first op (as string)
+            luaD_propagate(L);
+        }
         else
         {
             // at least two string values; get as many as possible
@@ -521,9 +548,10 @@ void luaV_concat(lua_State* L, int total, int last)
             {
                 size_t l = tsvalue(top - n - 1)->len;
                 if (l > MAXSSIZE - tl)
-                    luaG_runerror(L, "string length overflow");
+                    luaG_raiserunerror(L, , "string length overflow");
                 tl += l;
             }
+            luaD_propagate(L);
 
             char buf[LUA_BUFFERSIZE];
             TString* ts = nullptr;
@@ -535,6 +563,7 @@ void luaV_concat(lua_State* L, int total, int last)
             else
             {
                 ts = luaS_bufstart(L, tl);
+                luaD_propagate(L);
                 buffer = ts->data;
             }
 
@@ -546,14 +575,9 @@ void luaV_concat(lua_State* L, int total, int last)
                 tl += l;
             }
 
-            if (tl < LUA_BUFFERSIZE)
-            {
-                setsvalue(L, top - n, luaS_newlstr(L, buffer, tl));
-            }
-            else
-            {
-                setsvalue(L, top - n, luaS_buffinish(L, ts));
-            }
+            TString* result = (tl < LUA_BUFFERSIZE) ? luaS_newlstr(L, buffer, tl) : luaS_buffinish(L, ts);
+            luaD_propagate(L);
+            setsvalue(L, top - n, result);
         }
         total -= n - 1; // got `n' strings to create 1 new
         last -= n - 1;
@@ -709,7 +733,7 @@ void luaV_doarithimpl(lua_State* L, StkId ra, const TValue* rb, const TValue* rc
     {
         if (!call_binTM(L, rb, rc, ra, op))
         {
-            luaG_aritherror(L, rb, rc, op);
+            luaG_raisearitherror(L, , rb, rc, op);
         }
     }
 }
@@ -750,21 +774,22 @@ void luaV_dolen(lua_State* L, StkId ra, const TValue* rb)
     }
 
     if (ttisnil(tm))
-        luaG_typeerror(L, rb, "get length of");
+        luaG_raisetypeerror(L, , rb, "get length of");
 
     StkId res = callTMres(L, ra, tm, rb, luaO_nilobject);
+    luaD_propagate(L);
     if (!ttisnumber(res))
-        luaG_runerror(L, "'__len' must return a number"); // note, we can't access rb since stack may have been reallocated
+        luaG_raiserunerror(L, , "'__len' must return a number"); // note, we can't access rb since stack may have been reallocated
 }
 
 LUAU_NOINLINE void luaV_prepareFORN(lua_State* L, StkId plimit, StkId pstep, StkId pinit)
 {
     if (!ttisnumber(pinit) && !luaV_tonumber(pinit, pinit))
-        luaG_forerror(L, pinit, "initial value");
+        luaG_raiseforerror(L, , pinit, "initial value");
     if (!ttisnumber(plimit) && !luaV_tonumber(plimit, plimit))
-        luaG_forerror(L, plimit, "limit");
+        luaG_raiseforerror(L, , plimit, "limit");
     if (!ttisnumber(pstep) && !luaV_tonumber(pstep, pstep))
-        luaG_forerror(L, pstep, "step");
+        luaG_raiseforerror(L, , pstep, "step");
 }
 
 // calls a C function f with no yielding support; optionally save one resulting value to the res register
@@ -774,14 +799,19 @@ LUAU_NOINLINE void luaV_callTM(lua_State* L, int nparams, int res)
     ++L->nCcalls;
 
     if (L->nCcalls >= LUAI_MAXCCALLS)
+    {
         luaD_checkCstack(L);
+        luaD_propagate(L);
+    }
 
     luaD_checkstack(L, LUA_MINSTACK);
+    luaD_propagate(L);
 
     StkId top = L->top;
     StkId fun = top - nparams - 1;
 
     CallInfo* ci = incr_ci(L);
+    luaD_propagate(L);
     ci->func = fun;
     ci->p = nullptr;
     ci->base = fun + 1;
@@ -799,6 +829,7 @@ LUAU_NOINLINE void luaV_callTM(lua_State* L, int nparams, int res)
 
     lua_CFunction func = clvalue(fun)->c.f;
     int n = func(L);
+    luaD_propagate(L);
     LUAU_ASSERT(n >= 0); // yields should have been blocked by nCcalls
 
     // ci is our callinfo, cip is our parent
@@ -829,7 +860,7 @@ LUAU_NOINLINE void luaV_tryfuncTM(lua_State* L, StkId func)
 {
     const TValue* tm = luaT_gettmbyobj(L, func, TM_CALL);
     if (!ttisfunction(tm))
-        luaG_typeerror(L, func, "call");
+        luaG_raisetypeerror(L, , func, "call");
     for (StkId p = L->top; p > func; p--) // open space for metamethod
         setobj2s(L, p, p - 1);
     L->top++;              // stack space pre-allocated by the caller

@@ -16,25 +16,35 @@
 
 typedef unsigned b_uint;
 
-static b_uint andaux(lua_State* L)
+static bool andaux(lua_State* L, b_uint* out)
 {
     int i, n = lua_gettop(L);
     b_uint r = ~(b_uint)0;
     for (i = 1; i <= n; i++)
-        r &= luaL_checkunsigned(L, i);
-    return trim(r);
+    {
+        b_uint v;
+        if (!luaL_requireunsigned(L, i, &v))
+            return false;
+        r &= v;
+    }
+    *out = trim(r);
+    return true;
 }
 
 static int b_and(lua_State* L)
 {
-    b_uint r = andaux(L);
+    b_uint r;
+    if (!andaux(L, &r))
+        return LUA_RAISED;
     lua_pushunsigned(L, r);
     return 1;
 }
 
 static int b_test(lua_State* L)
 {
-    b_uint r = andaux(L);
+    b_uint r;
+    if (!andaux(L, &r))
+        return LUA_RAISED;
     lua_pushboolean(L, r != 0);
     return 1;
 }
@@ -44,7 +54,12 @@ static int b_or(lua_State* L)
     int i, n = lua_gettop(L);
     b_uint r = 0;
     for (i = 1; i <= n; i++)
-        r |= luaL_checkunsigned(L, i);
+    {
+        b_uint v;
+        if (!luaL_requireunsigned(L, i, &v))
+            return LUA_RAISED;
+        r |= v;
+    }
     lua_pushunsigned(L, trim(r));
     return 1;
 }
@@ -54,14 +69,22 @@ static int b_xor(lua_State* L)
     int i, n = lua_gettop(L);
     b_uint r = 0;
     for (i = 1; i <= n; i++)
-        r ^= luaL_checkunsigned(L, i);
+    {
+        b_uint v;
+        if (!luaL_requireunsigned(L, i, &v))
+            return LUA_RAISED;
+        r ^= v;
+    }
     lua_pushunsigned(L, trim(r));
     return 1;
 }
 
 static int b_not(lua_State* L)
 {
-    b_uint r = ~luaL_checkunsigned(L, 1);
+    b_uint v;
+    if (!luaL_requireunsigned(L, 1, &v))
+        return LUA_RAISED;
+    b_uint r = ~v;
     lua_pushunsigned(L, trim(r));
     return 1;
 }
@@ -91,18 +114,28 @@ static int b_shift(lua_State* L, b_uint r, int i)
 
 static int b_lshift(lua_State* L)
 {
-    return b_shift(L, luaL_checkunsigned(L, 1), luaL_checkinteger(L, 2));
+    b_uint r;
+    int i;
+    if (!luaL_requireunsigned(L, 1, &r) || !luaL_requireinteger(L, 2, &i))
+        return LUA_RAISED;
+    return b_shift(L, r, i);
 }
 
 static int b_rshift(lua_State* L)
 {
-    return b_shift(L, luaL_checkunsigned(L, 1), -luaL_checkinteger(L, 2));
+    b_uint r;
+    int i;
+    if (!luaL_requireunsigned(L, 1, &r) || !luaL_requireinteger(L, 2, &i))
+        return LUA_RAISED;
+    return b_shift(L, r, -i);
 }
 
 static int b_arshift(lua_State* L)
 {
-    b_uint r = luaL_checkunsigned(L, 1);
-    int i = luaL_checkinteger(L, 2);
+    b_uint r;
+    int i;
+    if (!luaL_requireunsigned(L, 1, &r) || !luaL_requireinteger(L, 2, &i))
+        return LUA_RAISED;
     if (i < 0 || !(r & ((b_uint)1 << (NBITS - 1))))
         return b_shift(L, r, -i);
     else
@@ -118,7 +151,9 @@ static int b_arshift(lua_State* L)
 
 static int b_rot(lua_State* L, int i)
 {
-    b_uint r = luaL_checkunsigned(L, 1);
+    b_uint r;
+    if (!luaL_requireunsigned(L, 1, &r))
+        return LUA_RAISED;
     i &= (NBITS - 1); // i = i % NBITS
     r = trim(r);
     if (i != 0) // avoid undefined shift of NBITS when i == 0
@@ -129,12 +164,18 @@ static int b_rot(lua_State* L, int i)
 
 static int b_lrot(lua_State* L)
 {
-    return b_rot(L, luaL_checkinteger(L, 2));
+    int i;
+    if (!luaL_requireinteger(L, 2, &i))
+        return LUA_RAISED;
+    return b_rot(L, i);
 }
 
 static int b_rrot(lua_State* L)
 {
-    return b_rot(L, -luaL_checkinteger(L, 2));
+    int i;
+    if (!luaL_requireinteger(L, 2, &i))
+        return LUA_RAISED;
+    return b_rot(L, -i);
 }
 
 /*
@@ -143,23 +184,37 @@ static int b_rrot(lua_State* L)
 ** ('luaL_error' called without 'return' to avoid later warnings about
 ** 'width' being used uninitialized.)
 */
-static int fieldargs(lua_State* L, int farg, int* width)
+static bool fieldargs(lua_State* L, int farg, int* field, int* width)
 {
-    int f = luaL_checkinteger(L, farg);
-    int w = luaL_optinteger(L, farg + 1, 1);
-    luaL_argcheck(L, 0 <= f, farg, "field cannot be negative");
-    luaL_argcheck(L, 0 < w, farg + 1, "width must be positive");
+    int f, w;
+    if (!luaL_requireinteger(L, farg, &f) || !luaL_requireoptinteger(L, farg + 1, 1, &w))
+        return false;
+    if (!(0 <= f))
+    {
+        luaL_raiseargerror(L, farg, "field cannot be negative");
+        return false;
+    }
+    if (!(0 < w))
+    {
+        luaL_raiseargerror(L, farg + 1, "width must be positive");
+        return false;
+    }
     if (f + w > NBITS)
-        luaL_error(L, "trying to access non-existent bits");
+    {
+        luaL_raiseerror(L, "trying to access non-existent bits");
+        return false;
+    }
+    *field = f;
     *width = w;
-    return f;
+    return true;
 }
 
 static int b_extract(lua_State* L)
 {
-    int w;
-    b_uint r = luaL_checkunsigned(L, 1);
-    int f = fieldargs(L, 2, &w);
+    int f, w;
+    b_uint r;
+    if (!luaL_requireunsigned(L, 1, &r) || !fieldargs(L, 2, &f, &w))
+        return LUA_RAISED;
     r = (r >> f) & mask(w);
     lua_pushunsigned(L, r);
     return 1;
@@ -167,10 +222,10 @@ static int b_extract(lua_State* L)
 
 static int b_replace(lua_State* L)
 {
-    int w;
-    b_uint r = luaL_checkunsigned(L, 1);
-    b_uint v = luaL_checkunsigned(L, 2);
-    int f = fieldargs(L, 3, &w);
+    int f, w;
+    b_uint r, v;
+    if (!luaL_requireunsigned(L, 1, &r) || !luaL_requireunsigned(L, 2, &v) || !fieldargs(L, 3, &f, &w))
+        return LUA_RAISED;
     int m = mask(w);
     v &= m; // erase bits outside given width
     r = (r & ~(m << f)) | (v << f);
@@ -180,7 +235,9 @@ static int b_replace(lua_State* L)
 
 static int b_countlz(lua_State* L)
 {
-    b_uint v = luaL_checkunsigned(L, 1);
+    b_uint v;
+    if (!luaL_requireunsigned(L, 1, &v))
+        return LUA_RAISED;
 
     b_uint r = NBITS;
     for (int i = 0; i < NBITS; ++i)
@@ -196,7 +253,9 @@ static int b_countlz(lua_State* L)
 
 static int b_countrz(lua_State* L)
 {
-    b_uint v = luaL_checkunsigned(L, 1);
+    b_uint v;
+    if (!luaL_requireunsigned(L, 1, &v))
+        return LUA_RAISED;
 
     b_uint r = NBITS;
     for (int i = 0; i < NBITS; ++i)
@@ -212,7 +271,9 @@ static int b_countrz(lua_State* L)
 
 static int b_swap(lua_State* L)
 {
-    b_uint n = luaL_checkunsigned(L, 1);
+    b_uint n;
+    if (!luaL_requireunsigned(L, 1, &n))
+        return LUA_RAISED;
     n = (n << 24) | ((n << 8) & 0xff0000) | ((n >> 8) & 0xff00) | (n >> 24);
 
     lua_pushunsigned(L, n);

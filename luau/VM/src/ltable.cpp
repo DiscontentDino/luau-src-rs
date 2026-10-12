@@ -372,13 +372,14 @@ static int findindex(lua_State* L, LuaTable* t, StkId key)
                 break;
             n += gnext(n);
         }
-        luaG_runerror(L, "invalid key to 'next'"); // key not found
+        luaG_raiserunerror(L, 0, "invalid key to 'next'"); // key not found
     }
 }
 
 int luaH_next(lua_State* L, LuaTable* t, StkId key)
 {
     int i = findindex(L, t, key); // find original element
+    luaD_propagate(L, 0);
     for (i++; i < t->sizearray; i++)
     { // try first array part
         if (!ttisnil(&t->array[i]))
@@ -513,8 +514,9 @@ static int hashslotsused(const LuaTable* t)
 static void setarrayvector(lua_State* L, LuaTable* t, int size)
 {
     if (size > MAXSIZE)
-        luaG_runerror(L, "table overflow");
+        luaG_raiserunerror(L, , "table overflow");
     luaM_reallocarray(L, t->array, t->sizearray, size, TValue, t->memcat);
+    luaD_propagate(L);
     TValue* array = t->array;
     for (int i = t->sizearray; i < size; i++)
         setnilvalue(&array[i]);
@@ -534,9 +536,11 @@ static void setnodevector(lua_State* L, LuaTable* t, int size)
         int i;
         lsize = ceillog2(size);
         if (lsize > MAXBITS)
-            luaG_runerror(L, "table overflow");
+            luaG_raiserunerror(L, , "table overflow");
         size = twoto(lsize);
-        t->node = luaM_newarray(L, size, LuaNode, t->memcat);
+        LuaNode* node = luaM_newarray(L, size, LuaNode, t->memcat);
+        luaD_propagate(L);
+        t->node = node;
         for (i = 0; i < size; i++)
         {
             LuaNode* n = gnode(t, i);
@@ -575,7 +579,7 @@ static void resize(lua_State* L, LuaTable* t, int nasize, int nhsize)
     LUAU_ASSERT(!hasmetacache(t));
 
     if (nasize > MAXSIZE || nhsize > MAXSIZE)
-        luaG_runerror(L, "table overflow");
+        luaG_raiserunerror(L, , "table overflow");
 
     if (DFFlag::LuauTableRobustOom)
     {
@@ -587,7 +591,7 @@ static void resize(lua_State* L, LuaTable* t, int nasize, int nhsize)
         {
             lsizenode = ceillog2(nhsize);
             if (lsizenode > MAXBITS)
-                luaG_runerror(L, "table overflow");
+                luaG_raiserunerror(L, , "table overflow");
 
             nhsize = twoto(lsizenode);
         }
@@ -602,6 +606,7 @@ static void resize(lua_State* L, LuaTable* t, int nasize, int nhsize)
         if (nasize != oldsizearray)
         {
             newarray = luaM_newarray(L, nasize, TValue, t->memcat);
+            luaD_propagate(L);
 
             if (nasize < oldsizearray)
             {
@@ -633,12 +638,14 @@ static void resize(lua_State* L, LuaTable* t, int nasize, int nhsize)
                 if (newnode == nullptr)
                 {
                     luaM_freearray(L, newarray, nasize, TValue, t->memcat);
-                    luaD_throw(L, LUA_ERRMEM);
+                    luaD_propagate(L);
+                    luaD_raise(L, , LUA_ERRMEM);
                 }
             }
             else
             {
                 newnode = luaM_newarray(L, nhsize, LuaNode, t->memcat);
+                luaD_propagate(L);
             }
 
             for (int i = 0; i < nhsize; i++)
@@ -717,9 +724,13 @@ static void resize(lua_State* L, LuaTable* t, int nasize, int nhsize)
     int oldhsize = t->lsizenode;
     LuaNode* nold = t->node; // save old hash ...
     if (nasize > oldasize)   // array part must grow?
+    {
         setarrayvector(L, t, nasize);
+        luaD_propagate(L);
+    }
     // create new hash part with appropriate size
     setnodevector(L, t, nhsize);
+    luaD_propagate(L);
     // used for the migration check at the end
     LuaNode* nnew = t->node;
     if (nasize < oldasize)
@@ -729,7 +740,9 @@ static void resize(lua_State* L, LuaTable* t, int nasize, int nhsize)
             TValue* oldarray = t->array;
 
             // shrink array
-            t->array = luaM_newarray(L, nasize, TValue, t->memcat);
+            TValue* newarray = luaM_newarray(L, nasize, TValue, t->memcat);
+            luaD_propagate(L);
+            t->array = newarray;
             t->sizearray = nasize;
 
             // copy elements from remaining slice
@@ -781,6 +794,7 @@ static void resize(lua_State* L, LuaTable* t, int nasize, int nhsize)
             }
             // shrink array
             luaM_reallocarray(L, t->array, oldasize, nasize, TValue, t->memcat);
+            luaD_propagate(L);
         }
     }
     // used for the migration check at the end
@@ -836,7 +850,7 @@ static int adjustasize(LuaTable* t, int size, int extraintkey)
 void luaH_resizearray(lua_State* L, LuaTable* t, int nasize)
 {
     if (FFlag::LuauTableArrayAdjustCheck && nasize > MAXSIZE)
-        luaG_runerror(L, "table overflow");
+        luaG_raiserunerror(L, , "table overflow");
 
     int nsize = (t->node == dummynode) ? 0 : sizenode(t);
     int asize = DFFlag::LuauSplitTableLookups ? adjustasize(t, nasize, -1) : adjustasize_DEPRECATED(t, nasize, NULL);
@@ -961,6 +975,7 @@ static void rehash(lua_State* L, LuaTable* t, int newintkey)
 LuaTable* luaH_new(lua_State* L, int narray, int nhash)
 {
     LuaTable* t = luaM_newgco(L, LuaTable, sizeof(LuaTable), L->activememcat, LUA_TTABLE);
+    luaD_propagate(L, nullptr);
     luaC_init(L, t, LUA_TTABLE);
     t->metatable = NULL;
     t->tmcache = cast_byte(~0);
@@ -973,9 +988,15 @@ LuaTable* luaH_new(lua_State* L, int narray, int nhash)
     t->nodemask8 = 0;
     t->node = cast_to(LuaNode*, dummynode);
     if (narray > 0)
+    {
         setarrayvector(L, t, narray);
+        luaD_propagate(L, nullptr);
+    }
     if (nhash > 0)
+    {
         setnodevector(L, t, nhash);
+        luaD_propagate(L, nullptr);
+    }
     return t;
 }
 
@@ -1062,6 +1083,7 @@ static TValue* newkey_DEPRECATED(lua_State* L, LuaTable* t, const TValue* key)
     if (ttisnumber(key) && nvalue(key) == t->sizearray + 1)
     {
         rehash_DEPRECATED(L, t, key); // grow table
+        luaD_propagate(L, nullptr);
 
         // after rehash, numeric keys might be located in the new array part, but won't be found in the node part
         return arrayornewkey_DEPRECATED(L, t, key);
@@ -1074,6 +1096,7 @@ static TValue* newkey_DEPRECATED(lua_State* L, LuaTable* t, const TValue* key)
         if (n == NULL)
         {                      // cannot find a free place?
             rehash_DEPRECATED(L, t, key); // grow table
+            luaD_propagate(L, nullptr);
 
             // after rehash, numeric keys might be located in the new array part, but won't be found in the node part
             return arrayornewkey_DEPRECATED(L, t, key);
@@ -1128,6 +1151,7 @@ static LUAU_NOINLINE TValue* newkeytagged(lua_State* L, LuaTable* t, const TValu
     if (IsIntKey && newintkey == t->sizearray + 1)
     {
         rehash<IsIntKey>(L, t, newintkey); // grow table
+        luaD_propagate(L, nullptr);
 
         if (unsigned(newintkey) - 1 < unsigned(t->sizearray))
             return &t->array[newintkey - 1];
@@ -1146,6 +1170,7 @@ static LUAU_NOINLINE TValue* newkeytagged(lua_State* L, LuaTable* t, const TValu
         if (n == nullptr)
         {
             rehash<IsIntKey>(L, t, newintkey); // grow table
+            luaD_propagate(L, nullptr);
 
             if (IsIntKey && unsigned(newintkey) - 1 < unsigned(t->sizearray))
                 return &t->array[newintkey - 1];
@@ -1336,7 +1361,7 @@ TValue* luaH_newkey(lua_State* L, LuaTable* t, const TValue* key)
         switch (ttype(key))
         {
         case LUA_TNIL:
-            luaG_runerror(L, "table index is nil");
+            luaG_raiserunerror(L, nullptr, "table index is nil");
             break;
         case LUA_TBOOLEAN:
             return newkeytagged<LUA_TBOOLEAN, false>(L, t, key, bvalue(key), -1);
@@ -1347,7 +1372,7 @@ TValue* luaH_newkey(lua_State* L, LuaTable* t, const TValue* key)
             double n = nvalue(key);
 
             if (luai_numisnan(n))
-                luaG_runerror(L, "table index is NaN");
+                luaG_raiserunerror(L, nullptr, "table index is NaN");
 
             int k;
             luai_num2int(k, n);
@@ -1360,7 +1385,7 @@ TValue* luaH_newkey(lua_State* L, LuaTable* t, const TValue* key)
             return newkeytagged<LUA_TINTEGER, false>(L, t, key, lvalue(key), -1);
         case LUA_TVECTOR:
             if (luai_vecisnan(vvalue(key)))
-                luaG_runerror(L, "table index contains NaN");
+                luaG_raiserunerror(L, nullptr, "table index contains NaN");
 
             return newkeytagged<LUA_TVECTOR, false>(L, t, key, (const LUA_VECTOR_TYPE*)vvalue(key), -1);
         case LUA_TSTRING:
@@ -1372,11 +1397,11 @@ TValue* luaH_newkey(lua_State* L, LuaTable* t, const TValue* key)
     else
     {
         if (ttisnil(key))
-            luaG_runerror(L, "table index is nil");
+            luaG_raiserunerror(L, nullptr, "table index is nil");
         else if (ttisnumber(key) && luai_numisnan(nvalue(key)))
-            luaG_runerror(L, "table index is NaN");
+            luaG_raiserunerror(L, nullptr, "table index is NaN");
         else if (ttisvector(key) && luai_vecisnan(vvalue(key)))
-            luaG_runerror(L, "table index contains NaN");
+            luaG_raiserunerror(L, nullptr, "table index contains NaN");
         return newkey_DEPRECATED(L, t, key);
     }
 }
@@ -1511,6 +1536,7 @@ int luaH_getn(LuaTable* t)
 LuaTable* luaH_clone(lua_State* L, LuaTable* tt)
 {
     LuaTable* t = luaM_newgco(L, LuaTable, sizeof(LuaTable), L->activememcat, LUA_TTABLE);
+    luaD_propagate(L, nullptr);
     luaC_init(L, t, LUA_TTABLE);
     t->metatable = tt->metatable;
     t->tmcache = tt->tmcache;
@@ -1526,6 +1552,7 @@ LuaTable* luaH_clone(lua_State* L, LuaTable* tt)
     if (tt->sizearray)
     {
         t->array = luaM_newarray(L, tt->sizearray, TValue, t->memcat);
+        luaD_propagate(L, nullptr);
         maybesetaboundary(t, getaboundary(tt));
         t->sizearray = tt->sizearray;
 
@@ -1535,7 +1562,9 @@ LuaTable* luaH_clone(lua_State* L, LuaTable* tt)
     if (tt->node != dummynode)
     {
         int size = 1 << tt->lsizenode;
-        t->node = luaM_newarray(L, size, LuaNode, t->memcat);
+        LuaNode* node = luaM_newarray(L, size, LuaNode, t->memcat);
+        luaD_propagate(L, nullptr);
+        t->node = node;
         t->lsizenode = tt->lsizenode;
         t->nodemask8 = tt->nodemask8;
         memcpy(t->node, tt->node, size * sizeof(LuaNode));
@@ -1629,6 +1658,7 @@ void luaH_setreadonly(lua_State* L, LuaTable* t, bool readonly)
             {
                 TValue* array = t->array;
                 luaM_reallocarray(L, array, t->sizearray, t->sizearray + TM_N, TValue, t->memcat);
+                luaD_propagate(L);
                 memmove(array + TM_N, array, t->sizearray * sizeof(TValue));
                 memcpy(array, metamethods, sizeof(metamethods));
                 t->array = array + TM_N;
@@ -1647,6 +1677,7 @@ void luaH_setreadonly(lua_State* L, LuaTable* t, bool readonly)
             if (t->sizearray != 0)
             {
                 newarray = luaM_newarray(L, t->sizearray, TValue, t->memcat);
+                luaD_propagate(L);
                 memcpy(newarray, oldarray, t->sizearray * sizeof(TValue));
             }
 

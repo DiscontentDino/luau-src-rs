@@ -33,6 +33,7 @@ static int db_info(lua_State* L)
     {
         // for 'f' option, we reserve one slot and we also record the stack top
         lua_rawcheckstack(L1, 1);
+        luaL_propagate(L);
 
         l1top = lua_gettop(L1);
     }
@@ -41,7 +42,7 @@ static int db_info(lua_State* L)
     if (lua_isnumber(L, arg + 1))
     {
         level = (int)lua_tointeger(L, arg + 1);
-        luaL_argcheck(L, level >= 0, arg + 1, "level can't be negative");
+        luaL_argrequire(L, level >= 0, arg + 1, "level can't be negative");
     }
     else if (arg == 0 && lua_isfunction(L, 1))
     {
@@ -49,9 +50,11 @@ static int db_info(lua_State* L)
         level = -lua_gettop(L);
     }
     else
-        luaL_argerror(L, arg + 1, "function or level expected");
+        return luaL_raiseargerror(L, arg + 1, "function or level expected");
 
-    const char* options = luaL_checkstring(L, arg + 2);
+    const char* options;
+    if (!luaL_requirestring(L, arg + 2, &options))
+        return LUA_RAISED;
 
     lua_Debug ar;
     if (!lua_getinfo(L1, level, options, &ar))
@@ -70,7 +73,7 @@ static int db_info(lua_State* L)
                 if (L != L1)
                     lua_settop(L1, l1top);
 
-                luaL_argerror(L, arg + 2, "duplicate option");
+                return luaL_raiseargerror(L, arg + 2, "duplicate option");
             }
             occurs[*it - 'a'] = true;
         }
@@ -79,6 +82,7 @@ static int db_info(lua_State* L)
         {
         case 's':
             lua_pushstring(L, ar.short_src);
+            luaL_propagate(L);
             results++;
             break;
 
@@ -89,6 +93,7 @@ static int db_info(lua_State* L)
 
         case 'n':
             lua_pushstring(L, ar.name ? ar.name : "");
+            luaL_propagate(L);
             results++;
             break;
 
@@ -97,6 +102,7 @@ static int db_info(lua_State* L)
                 lua_pushvalue(L, -1 - results); // function is right before results
             else
                 lua_xmove(L1, L, 1); // function is at top of L1
+            luaL_propagate(L);
             results++;
             break;
 
@@ -111,7 +117,7 @@ static int db_info(lua_State* L)
             if (L != L1)
                 lua_settop(L1, l1top);
 
-            luaL_argerror(L, arg + 2, "invalid option");
+            return luaL_raiseargerror(L, arg + 2, "invalid option");
         }
     }
 
@@ -122,9 +128,13 @@ static int db_traceback(lua_State* L)
 {
     int arg;
     lua_State* L1 = getthread(L, &arg);
-    const char* msg = luaL_optstring(L, arg + 1, NULL);
-    int level = luaL_optinteger(L, arg + 2, (L == L1) ? 1 : 0);
-    luaL_argcheck(L, level >= 0, arg + 2, "level can't be negative");
+    const char* msg;
+    if (!luaL_requireoptstring(L, arg + 1, NULL, &msg))
+        return LUA_RAISED;
+    int level;
+    if (!luaL_requireoptinteger(L, arg + 2, (L == L1) ? 1 : 0, &level))
+        return LUA_RAISED;
+    luaL_argrequire(L, level >= 0, arg + 2, "level can't be negative");
 
     luaL_traceback(L, L1, msg, level);
 

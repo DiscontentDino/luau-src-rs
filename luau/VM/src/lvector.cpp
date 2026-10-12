@@ -7,6 +7,7 @@
 LuauVector* luaVec_newvector(lua_State* L, double x, double y, double z, double w)
 {
     LuauVector* v = luaM_newgcofixed(L, LuauVector, sizevector(), L->activememcat, LUA_TVECTOR);
+    luaD_propagate(L, nullptr);
     luaC_init(L, v, LUA_TVECTOR);
     v->v[0] = (LUA_VECTOR_TYPE)x;
     v->v[1] = (LUA_VECTOR_TYPE)y;

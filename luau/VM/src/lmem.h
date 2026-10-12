@@ -15,7 +15,11 @@ union GCObject;
 #define luaM_freegcofixed(L, p, size, memcat, page) luaM_freegcofixed_(L, obj2gco(p), size, memcat, page)
 #define luaM_freegcocaged(L, p, size, memcat, page) luaM_freegcocaged_(L, obj2gco(p), size, memcat, page)
 
+#if LUAU_ERRORS_AS_RETURNS
+#define luaM_arraysize_(L, n, e) ((cast_to(size_t, (n)) <= SIZE_MAX / (e)) ? (n) * (e) : (luaM_settoobig(L), SIZE_MAX))
+#else
 #define luaM_arraysize_(L, n, e) ((cast_to(size_t, (n)) <= SIZE_MAX / (e)) ? (n) * (e) : (luaM_toobig(L), SIZE_MAX))
+#endif
 
 #define luaM_newarray(L, n, t, memcat) cast_to(t*, luaM_new_(L, luaM_arraysize_(L, n, sizeof(t)), memcat))
 #define luaM_trynewarray(L, n, t, memcat) cast_to(t*, luaM_trynew_(L, luaM_arraysize_(L, n, sizeof(t)), memcat))
@@ -34,7 +38,15 @@ LUAI_FUNC void luaM_freegcofixed_(lua_State* L, GCObject* block, size_t osize, u
 LUAI_FUNC void luaM_freegcocaged_(lua_State* L, GCObject* block, size_t osize, uint8_t memcat, lua_Page* page);
 LUAI_FUNC void* luaM_realloc_(lua_State* L, void* block, size_t osize, size_t nsize, uint8_t memcat);
 
+#if LUAU_ERRORS_AS_RETURNS
+#define luaM_raisetoobig(L, ret)     do     {         luaM_settoobig(L);         return ret;     } while (0)
+
+LUAI_FUNC void luaM_settoobig(lua_State* L);
+#else
+#define luaM_raisetoobig(L, ret) luaM_toobig(L)
+
 LUAI_FUNC l_noret luaM_toobig(lua_State* L);
+#endif
 
 LUAI_FUNC void luaM_getpagewalkinfo(lua_Page* page, char** start, char** end, int* busyBlocks, int* blockSize);
 LUAI_FUNC void luaM_getpageinfo(lua_Page* page, int* pageBlocks, int* busyBlocks, int* blockSize, int* pageSize);

@@ -11,11 +11,12 @@ LUAU_FASTFLAG(LuauBufferCage)
 Buffer* luaB_newbuffer(lua_State* L, size_t s)
 {
     if (s > MAX_BUFFER_SIZE)
-        luaM_toobig(L);
+        luaM_raisetoobig(L, nullptr);
 
     global_State* g = L->global;
     Buffer* b = (FFlag::LuauBufferCage && g->cagealloc) ? luaM_newgcocaged(L, Buffer, sizebuffer(s), L->activememcat, LUA_TBUFFER)
                                                          : luaM_newgco(L, Buffer, sizebuffer(s), L->activememcat, LUA_TBUFFER);
+    luaD_propagate(L, nullptr);
 
     luaC_init(L, b, LUA_TBUFFER);
     b->len = unsigned(s);

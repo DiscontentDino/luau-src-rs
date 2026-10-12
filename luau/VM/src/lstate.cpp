@@ -30,11 +30,13 @@ static void stack_init(lua_State* L1, lua_State* L)
 {
     // initialize CallInfo array
     L1->base_ci = luaM_newarray(L, BASIC_CI_SIZE, CallInfo, L1->memcat);
+    luaD_propagate(L);
     L1->ci = L1->base_ci;
     L1->size_ci = BASIC_CI_SIZE;
     L1->end_ci = L1->base_ci + L1->size_ci - 1;
     // initialize stack array
     L1->stack = luaM_newarray(L, BASIC_STACK_SIZE + EXTRA_STACK, TValue, L1->memcat);
+    luaD_propagate(L);
     L1->stacksize = BASIC_STACK_SIZE + EXTRA_STACK;
     TValue* stack = L1->stack;
     for (int i = 0; i < BASIC_STACK_SIZE + EXTRA_STACK; i++)
@@ -59,8 +61,12 @@ static LuaTable* weakenvalues(lua_State* L, LuaTable* wt)
 {
     LUAU_ASSERT(FFlag::LuauGcTraceUdata);
     LuaTable* mt = luaH_new(L, 0, 1);
+    luaD_propagate(L, nullptr);
     TValue* slot = luaH_setstr(L, mt, L->global->tmname[TM_MODE]);
-    setsvalue(L, slot, luaS_newliteral(L, "v"));
+    luaD_propagate(L, nullptr);
+    TString* mode = luaS_newliteral(L, "v");
+    luaD_propagate(L, nullptr);
+    setsvalue(L, slot, mode);
     wt->metatable = mt;
     return wt;
 }
@@ -71,18 +77,31 @@ static LuaTable* weakenvalues(lua_State* L, LuaTable* wt)
 static void f_luaopen(lua_State* L, void* ud)
 {
     global_State* g = L->global;
-    stack_init(L, L);                             // init stack
-    L->gt = luaH_new(L, 0, 2);                    // table of globals
-    sethvalue(L, registry(L), luaH_new(L, 0, 2)); // registry
-    luaS_resize(L, LUA_MINSTRTABSIZE);            // initial size of string table
+    stack_init(L, L); // init stack
+    luaD_propagate(L);
+    L->gt = luaH_new(L, 0, 2); // table of globals
+    luaD_propagate(L);
+    LuaTable* reg = luaH_new(L, 0, 2);
+    luaD_propagate(L);
+    sethvalue(L, registry(L), reg);    // registry
+    luaS_resize(L, LUA_MINSTRTABSIZE); // initial size of string table
+    luaD_propagate(L);
     luaT_init(L);
+    luaD_propagate(L);
     if (FFlag::LuauGcTraceUdata)
     {
-        LuaTable* wt = weakenvalues(L, luaH_new(L, 0, 0)); // weakregistry
+        LuaTable* weak = luaH_new(L, 0, 0);
+        luaD_propagate(L);
+        LuaTable* wt = weakenvalues(L, weak); // weakregistry
+        luaD_propagate(L);
         sethvalue(L, &L->global->weakregistry, wt);
     }
-    luaS_fix(luaS_newliteral(L, LUA_MEMERRMSG)); // pin to make sure we can always throw this error
-    luaS_fix(luaS_newliteral(L, LUA_ERRERRMSG)); // pin to make sure we can always throw this error
+    TString* memerrmsg = luaS_newliteral(L, LUA_MEMERRMSG);
+    luaD_propagate(L);
+    luaS_fix(memerrmsg); // pin to make sure we can always throw this error
+    TString* errerrmsg = luaS_newliteral(L, LUA_ERRERRMSG);
+    luaD_propagate(L);
+    luaS_fix(errerrmsg); // pin to make sure we can always throw this error
     g->GCthreshold = 4 * g->totalbytes;
 }
 
@@ -138,6 +157,7 @@ static void close_state(lua_State* L)
 lua_State* luaE_newthread(lua_State* L)
 {
     lua_State* L1 = luaM_newgco(L, lua_State, sizeof(lua_State), L->activememcat, LUA_TTHREAD);
+    luaD_propagate(L, nullptr);
 
     if (FFlag::LuauEasyStateInit)
         memset(L1, 0, sizeof(lua_State));
@@ -151,6 +171,7 @@ lua_State* luaE_newthread(lua_State* L)
 
     L1->activememcat = L->activememcat; // inherit the active memory category
     stack_init(L1, L);                  // init stack
+    luaD_propagate(L, nullptr);
     L1->gt = L->gt;                     // share table of globals
     L1->singlestep = L->singlestep;
     LUAU_ASSERT(iswhite(obj2gco(L1)));
@@ -184,7 +205,10 @@ void lua_resetthread(lua_State* L)
     setnilvalue(ci->func);
     L->ci = ci;
     if (L->size_ci != BASIC_CI_SIZE)
+    {
         luaD_reallocCI(L, BASIC_CI_SIZE);
+        luaD_propagate(L);
+    }
     // clear thread state
     L->status = LUA_OK;
     L->base = L->ci->base;
@@ -192,7 +216,10 @@ void lua_resetthread(lua_State* L)
     L->nCcalls = L->baseCcalls = 0;
     // clear thread stack
     if (L->stacksize != BASIC_STACK_SIZE + EXTRA_STACK)
+    {
         luaD_reallocstack(L, BASIC_STACK_SIZE, 0);
+        luaD_propagate(L);
+    }
     for (int i = 0; i < L->stacksize; i++)
         setnilvalue(L->stack + i);
     L->finalizers = nullptr;
@@ -203,7 +230,7 @@ int lua_isthreadreset(lua_State* L)
     return L->ci == L->base_ci && L->base == L->top && L->status == LUA_OK;
 }
 
-void lua_setbuffercage(lua_State* L, lua_CageAlloc alloc, void* ud)
+void lua_setmemorycage(lua_State* L, lua_CageAlloc alloc, void* ud)
 {
     global_State* g = L->global;
     g->cagealloc = alloc;
@@ -251,6 +278,7 @@ lua_State* lua_newstate(lua_Alloc allocator, void* ud)
         g->gcstats = GCStats();
 
         g->lastprotoid = 1;
+        g->lastclassid = 1;
 
 #ifdef LUAI_GCMETRICS
         g->gcmetrics = GCMetrics();
@@ -286,6 +314,10 @@ lua_State* lua_newstate(lua_Alloc allocator, void* ud)
         g->GCthreshold = 0; // mark it as unfinished state
         g->registryfree = 0;
         g->errorjmp = NULL;
+#if LUAU_ERRORS_AS_RETURNS
+        g->errcode = 0;
+        g->protecteddepth = 0;
+#endif
         g->rngstate = 0;
         g->ptrenckey[0] = 1;
         g->ptrenckey[1] = 0;
@@ -368,6 +400,7 @@ lua_State* lua_newstate(lua_Alloc allocator, void* ud)
 
         g->gcstats = GCStats();
         g->lastprotoid = 1;
+        g->lastclassid = 1;
 
         g->builtinPcall = NULL;
         g->builtinXpcall = NULL;

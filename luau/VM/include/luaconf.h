@@ -2,6 +2,14 @@
 // This code is based on Lua 5.x implementation licensed under MIT License; see lua_LICENSE.txt for details
 #pragma once
 
+#if !defined(LUAU_ERRORS_AS_RETURNS)
+#define LUAU_ERRORS_AS_RETURNS 0
+#endif
+
+#if LUAU_ERRORS_AS_RETURNS && LUA_USE_LONGJMP
+#error "LUAU_ERRORS_AS_RETURNS and LUA_USE_LONGJMP are mutually exclusive"
+#endif
+
 // When debugging complex issues, consider enabling one of these:
 // This will reallocate the stack very aggressively at every opportunity; use this with asan to catch stale stack pointers
 // #define HARDSTACKTESTS 1
@@ -37,6 +45,14 @@
 #define LUA_PRINTF_ATTR(fmt, arg) __attribute__((format(printf, fmt, arg)))
 #else
 #define LUA_PRINTF_ATTR(fmt, arg)
+#endif
+
+#if defined(__GNUC__)
+#define LUA_NODISCARD __attribute__((warn_unused_result))
+#elif defined(_MSC_VER)
+#define LUA_NODISCARD _Check_return_
+#else
+#define LUA_NODISCARD
 #endif
 
 #ifdef _MSC_VER
@@ -139,6 +155,10 @@
 
 #ifndef LUA_VECTOR_DOUBLE
 #define LUA_VECTOR_DOUBLE 0
+#endif
+
+#if LUAU_ERRORS_AS_RETURNS && LUA_VECTOR_DOUBLE
+#error "LUAU_ERRORS_AS_RETURNS does not support LUA_VECTOR_DOUBLE"
 #endif
 
 #if LUA_VECTOR_DOUBLE == 1

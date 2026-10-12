@@ -53,7 +53,9 @@ typedef int (*lua_Continuation)(lua_State* L, int status);
 */
 
 typedef void* (*lua_Alloc)(void* ud, void* ptr, size_t osize, size_t nsize);
-// `type` identifies the caged heap allocation, which is an opaque embedder-defined identifier
+
+// `type` is an opaque VM-defined value which identifies the caged heap allocation kind
+// separating allocations of different types is recommended
 typedef void* (*lua_CageAlloc)(void* ud, void* ptr, size_t osize, size_t nsize, int type);
 
 // non-return type
@@ -274,10 +276,8 @@ LUA_API int lua_isyieldable(lua_State* L);
 LUA_API void* lua_getthreaddata(lua_State* L);
 LUA_API void lua_setthreaddata(lua_State* L, void* data);
 LUA_API int lua_costatus(lua_State* L, lua_State* co);
-
-// NOTE: experimental API, requires a Debug flag and is subject to breaking changes
 LUA_API int lua_hasfinalizers(lua_State* L);
-LUA_API void lua_pushfinalizerfunction(lua_State* L);
+LUA_API void lua_pushfinalizerfunction(lua_State* L, lua_State* co, int toclose);
 LUA_API void lua_addfinalizer(lua_State* L, lua_State* co, int idx);
 
 /*
@@ -358,7 +358,14 @@ LUA_API int64_t lua_allocationrate(lua_State* L);
 ** miscellaneous functions
 */
 
+#define LUA_RAISED (-1)
+#if LUAU_ERRORS_AS_RETURNS
+LUA_API int lua_raiseerror(lua_State* L);
+#else
+LUA_API int LUA_NORETURN lua_raiseerror(lua_State* L);
 LUA_API l_noret lua_error(lua_State* L);
+#endif
+LUA_API int lua_haserror(lua_State* L);
 
 LUA_API int lua_next(lua_State* L, int idx);
 LUA_API int lua_rawiter(lua_State* L, int idx, int iter);
@@ -639,10 +646,10 @@ typedef struct lua_Callbacks lua_Callbacks;
 
 LUA_API lua_Callbacks* lua_callbacks(lua_State* L);
 
-// Must be called after lua_newstate and before the state creates any buffers
+// Must be called after lua_newstate and before the state creates any additional objects
 // The VM makes no assumptions about the layout or structure of the caged heap
-// The VM does assume that the embedder will free any memory allocated if the lua_State the cage is associated with is closed
-LUA_API void lua_setbuffercage(lua_State* L, lua_CageAlloc alloc, void* ud);
+// The VM does assume that the embedder will free any memory allocated if the main lua_State the cage is associated with is closed
+LUA_API void lua_setmemorycage(lua_State* L, lua_CageAlloc alloc, void* ud);
 
 /******************************************************************************
  * Copyright (c) 2019-2023 Roblox Corporation

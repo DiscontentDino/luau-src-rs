@@ -40,92 +40,139 @@ static void pcg32_seed(uint64_t* state, uint64_t seed)
 
 static int math_abs(lua_State* L)
 {
-    lua_pushnumber(L, fabs(luaL_checknumber(L, 1)));
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
+    lua_pushnumber(L, fabs(x));
     return 1;
 }
 
 static int math_sin(lua_State* L)
 {
-    lua_pushnumber(L, sin(luaL_checknumber(L, 1)));
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
+    lua_pushnumber(L, sin(x));
     return 1;
 }
 
 static int math_sinh(lua_State* L)
 {
-    lua_pushnumber(L, sinh(luaL_checknumber(L, 1)));
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
+    lua_pushnumber(L, sinh(x));
     return 1;
 }
 
 static int math_cos(lua_State* L)
 {
-    lua_pushnumber(L, cos(luaL_checknumber(L, 1)));
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
+    lua_pushnumber(L, cos(x));
     return 1;
 }
 
 static int math_cosh(lua_State* L)
 {
-    lua_pushnumber(L, cosh(luaL_checknumber(L, 1)));
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
+    lua_pushnumber(L, cosh(x));
     return 1;
 }
 
 static int math_tan(lua_State* L)
 {
-    lua_pushnumber(L, tan(luaL_checknumber(L, 1)));
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
+    lua_pushnumber(L, tan(x));
     return 1;
 }
 
 static int math_tanh(lua_State* L)
 {
-    lua_pushnumber(L, tanh(luaL_checknumber(L, 1)));
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
+    lua_pushnumber(L, tanh(x));
     return 1;
 }
 
 static int math_asin(lua_State* L)
 {
-    lua_pushnumber(L, asin(luaL_checknumber(L, 1)));
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
+    lua_pushnumber(L, asin(x));
     return 1;
 }
 
 static int math_acos(lua_State* L)
 {
-    lua_pushnumber(L, acos(luaL_checknumber(L, 1)));
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
+    lua_pushnumber(L, acos(x));
     return 1;
 }
 
 static int math_atan(lua_State* L)
 {
-    lua_pushnumber(L, atan(luaL_checknumber(L, 1)));
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
+    lua_pushnumber(L, atan(x));
     return 1;
 }
 
 static int math_atan2(lua_State* L)
 {
-    lua_pushnumber(L, atan2(luaL_checknumber(L, 1), luaL_checknumber(L, 2)));
+    double x;
+    double y;
+    if (!luaL_requirenumber(L, 1, &x) || !luaL_requirenumber(L, 2, &y))
+        return LUA_RAISED;
+    lua_pushnumber(L, atan2(x, y));
     return 1;
 }
 
 static int math_ceil(lua_State* L)
 {
-    lua_pushnumber(L, ceil(luaL_checknumber(L, 1)));
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
+    lua_pushnumber(L, ceil(x));
     return 1;
 }
 
 static int math_floor(lua_State* L)
 {
-    lua_pushnumber(L, floor(luaL_checknumber(L, 1)));
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
+    lua_pushnumber(L, floor(x));
     return 1;
 }
 
 static int math_fmod(lua_State* L)
 {
-    lua_pushnumber(L, fmod(luaL_checknumber(L, 1), luaL_checknumber(L, 2)));
+    double x;
+    double y;
+    if (!luaL_requirenumber(L, 1, &x) || !luaL_requirenumber(L, 2, &y))
+        return LUA_RAISED;
+    lua_pushnumber(L, fmod(x, y));
     return 1;
 }
 
 static int math_modf(lua_State* L)
 {
     double ip;
-    double fp = modf(luaL_checknumber(L, 1), &ip);
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
+    double fp = modf(x, &ip);
     lua_pushnumber(L, ip);
     lua_pushnumber(L, fp);
     return 2;
@@ -133,25 +180,36 @@ static int math_modf(lua_State* L)
 
 static int math_sqrt(lua_State* L)
 {
-    lua_pushnumber(L, sqrt(luaL_checknumber(L, 1)));
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
+    lua_pushnumber(L, sqrt(x));
     return 1;
 }
 
 static int math_pow(lua_State* L)
 {
-    lua_pushnumber(L, pow(luaL_checknumber(L, 1), luaL_checknumber(L, 2)));
+    double x;
+    double y;
+    if (!luaL_requirenumber(L, 1, &x) || !luaL_requirenumber(L, 2, &y))
+        return LUA_RAISED;
+    lua_pushnumber(L, pow(x, y));
     return 1;
 }
 
 static int math_log(lua_State* L)
 {
-    double x = luaL_checknumber(L, 1);
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
     double res;
     if (lua_isnoneornil(L, 2))
         res = log(x);
     else
     {
-        double base = luaL_checknumber(L, 2);
+        double base;
+        if (!luaL_requirenumber(L, 2, &base))
+            return LUA_RAISED;
         if (base == 2.0)
             res = log2(x);
         else if (base == 10.0)
@@ -165,50 +223,73 @@ static int math_log(lua_State* L)
 
 static int math_log10(lua_State* L)
 {
-    lua_pushnumber(L, log10(luaL_checknumber(L, 1)));
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
+    lua_pushnumber(L, log10(x));
     return 1;
 }
 
 static int math_exp(lua_State* L)
 {
-    lua_pushnumber(L, exp(luaL_checknumber(L, 1)));
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
+    lua_pushnumber(L, exp(x));
     return 1;
 }
 
 static int math_deg(lua_State* L)
 {
-    lua_pushnumber(L, luaL_checknumber(L, 1) / RADIANS_PER_DEGREE);
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
+    lua_pushnumber(L, x / RADIANS_PER_DEGREE);
     return 1;
 }
 
 static int math_rad(lua_State* L)
 {
-    lua_pushnumber(L, luaL_checknumber(L, 1) * RADIANS_PER_DEGREE);
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
+    lua_pushnumber(L, x * RADIANS_PER_DEGREE);
     return 1;
 }
 
 static int math_frexp(lua_State* L)
 {
     int e;
-    lua_pushnumber(L, frexp(luaL_checknumber(L, 1), &e));
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
+    lua_pushnumber(L, frexp(x, &e));
     lua_pushinteger(L, e);
     return 2;
 }
 
 static int math_ldexp(lua_State* L)
 {
-    lua_pushnumber(L, ldexp(luaL_checknumber(L, 1), luaL_checkinteger(L, 2)));
+    double x;
+    int y;
+    if (!luaL_requirenumber(L, 1, &x) || !luaL_requireinteger(L, 2, &y))
+        return LUA_RAISED;
+    lua_pushnumber(L, ldexp(x, y));
     return 1;
 }
 
 static int math_min(lua_State* L)
 {
     int n = lua_gettop(L); // number of arguments
-    double dmin = luaL_checknumber(L, 1);
+    double dmin;
+    if (!luaL_requirenumber(L, 1, &dmin))
+        return LUA_RAISED;
     int i;
     for (i = 2; i <= n; i++)
     {
-        double d = luaL_checknumber(L, i);
+        double d;
+        if (!luaL_requirenumber(L, i, &d))
+            return LUA_RAISED;
         if (d < dmin)
             dmin = d;
     }
@@ -219,11 +300,15 @@ static int math_min(lua_State* L)
 static int math_max(lua_State* L)
 {
     int n = lua_gettop(L); // number of arguments
-    double dmax = luaL_checknumber(L, 1);
+    double dmax;
+    if (!luaL_requirenumber(L, 1, &dmax))
+        return LUA_RAISED;
     int i;
     for (i = 2; i <= n; i++)
     {
-        double d = luaL_checknumber(L, i);
+        double d;
+        if (!luaL_requirenumber(L, i, &d))
+            return LUA_RAISED;
         if (d > dmax)
             dmax = d;
     }
@@ -248,8 +333,10 @@ static int math_random(lua_State* L)
     }
     case 1:
     { // only upper limit
-        int u = luaL_checkinteger(L, 1);
-        luaL_argcheck(L, 1 <= u, 1, "interval is empty");
+        int u;
+        if (!luaL_requireinteger(L, 1, &u))
+            return LUA_RAISED;
+        luaL_argrequire(L, 1 <= u, 1, "interval is empty");
 
         uint64_t x = uint64_t(u) * pcg32_random(&g->rngstate);
         int r = int(1 + (x >> 32));
@@ -258,26 +345,32 @@ static int math_random(lua_State* L)
     }
     case 2:
     { // lower and upper limits
-        int l = luaL_checkinteger(L, 1);
-        int u = luaL_checkinteger(L, 2);
-        luaL_argcheck(L, l <= u, 2, "interval is empty");
+        int l;
+        if (!luaL_requireinteger(L, 1, &l))
+            return LUA_RAISED;
+        int u;
+        if (!luaL_requireinteger(L, 2, &u))
+            return LUA_RAISED;
+        luaL_argrequire(L, l <= u, 2, "interval is empty");
 
         uint32_t ul = uint32_t(u) - uint32_t(l);
-        luaL_argcheck(L, ul < UINT_MAX, 2, "interval is too large"); // -INT_MIN..INT_MAX interval can result in integer overflow
+        luaL_argrequire(L, ul < UINT_MAX, 2, "interval is too large"); // -INT_MIN..INT_MAX interval can result in integer overflow
         uint64_t x = uint64_t(ul + 1) * pcg32_random(&g->rngstate);
         int r = int(l + (x >> 32));
         lua_pushinteger(L, r); // int between `l' and `u'
         break;
     }
     default:
-        luaL_error(L, "wrong number of arguments");
+        return luaL_raiseerror(L, "wrong number of arguments");
     }
     return 1;
 }
 
 static int math_randomseed(lua_State* L)
 {
-    int seed = luaL_checkinteger(L, 1);
+    int seed;
+    if (!luaL_requireinteger(L, 1, &seed))
+        return LUA_RAISED;
 
     pcg32_seed(&L->global->rngstate, seed);
     return 0;
@@ -373,9 +466,9 @@ static int math_noise(lua_State* L)
     double y = lua_tonumberx(L, 2, &ny);
     double z = lua_tonumberx(L, 3, &nz);
 
-    luaL_argexpected(L, nx, 1, "number");
-    luaL_argexpected(L, ny || lua_isnoneornil(L, 2), 2, "number");
-    luaL_argexpected(L, nz || lua_isnoneornil(L, 3), 3, "number");
+    luaL_argrequiretype(L, nx, 1, "number");
+    luaL_argrequiretype(L, ny || lua_isnoneornil(L, 2), 2, "number");
+    luaL_argrequiretype(L, nz || lua_isnoneornil(L, 3), 3, "number");
 
     if (FFlag::FixMathNoisePrecision)
     {
@@ -396,11 +489,17 @@ static int math_noise(lua_State* L)
 
 static int math_clamp(lua_State* L)
 {
-    double v = luaL_checknumber(L, 1);
-    double min = luaL_checknumber(L, 2);
-    double max = luaL_checknumber(L, 3);
+    double v;
+    if (!luaL_requirenumber(L, 1, &v))
+        return LUA_RAISED;
+    double min;
+    if (!luaL_requirenumber(L, 2, &min))
+        return LUA_RAISED;
+    double max;
+    if (!luaL_requirenumber(L, 3, &max))
+        return LUA_RAISED;
 
-    luaL_argcheck(L, min <= max, 3, "max must be greater than or equal to min");
+    luaL_argrequire(L, min <= max, 3, "max must be greater than or equal to min");
 
     double r = v < min ? min : v;
     r = r > max ? max : r;
@@ -411,24 +510,39 @@ static int math_clamp(lua_State* L)
 
 static int math_sign(lua_State* L)
 {
-    double v = luaL_checknumber(L, 1);
+    double v;
+    if (!luaL_requirenumber(L, 1, &v))
+        return LUA_RAISED;
     lua_pushnumber(L, v > 0.0 ? 1.0 : v < 0.0 ? -1.0 : 0.0);
     return 1;
 }
 
 static int math_round(lua_State* L)
 {
-    lua_pushnumber(L, round(luaL_checknumber(L, 1)));
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
+    lua_pushnumber(L, round(x));
     return 1;
 }
 
 static int math_map(lua_State* L)
 {
-    double x = luaL_checknumber(L, 1);
-    double inmin = luaL_checknumber(L, 2);
-    double inmax = luaL_checknumber(L, 3);
-    double outmin = luaL_checknumber(L, 4);
-    double outmax = luaL_checknumber(L, 5);
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
+    double inmin;
+    if (!luaL_requirenumber(L, 2, &inmin))
+        return LUA_RAISED;
+    double inmax;
+    if (!luaL_requirenumber(L, 3, &inmax))
+        return LUA_RAISED;
+    double outmin;
+    if (!luaL_requirenumber(L, 4, &outmin))
+        return LUA_RAISED;
+    double outmax;
+    if (!luaL_requirenumber(L, 5, &outmax))
+        return LUA_RAISED;
 
     double result = outmin + (x - inmin) * (outmax - outmin) / (inmax - inmin);
     lua_pushnumber(L, result);
@@ -437,9 +551,15 @@ static int math_map(lua_State* L)
 
 static int math_lerp(lua_State* L)
 {
-    double a = luaL_checknumber(L, 1);
-    double b = luaL_checknumber(L, 2);
-    double t = luaL_checknumber(L, 3);
+    double a;
+    if (!luaL_requirenumber(L, 1, &a))
+        return LUA_RAISED;
+    double b;
+    if (!luaL_requirenumber(L, 2, &b))
+        return LUA_RAISED;
+    double t;
+    if (!luaL_requirenumber(L, 3, &t))
+        return LUA_RAISED;
 
     double r = (t == 1.0) ? b : a + (b - a) * t;
     lua_pushnumber(L, r);
@@ -448,7 +568,9 @@ static int math_lerp(lua_State* L)
 
 static int math_isnan(lua_State* L)
 {
-    double x = luaL_checknumber(L, 1);
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
 
     lua_pushboolean(L, isnan(x));
     return 1;
@@ -456,7 +578,9 @@ static int math_isnan(lua_State* L)
 
 static int math_isinf(lua_State* L)
 {
-    double x = luaL_checknumber(L, 1);
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
 
     lua_pushboolean(L, isinf(x));
     return 1;
@@ -464,7 +588,9 @@ static int math_isinf(lua_State* L)
 
 static int math_isfinite(lua_State* L)
 {
-    double x = luaL_checknumber(L, 1);
+    double x;
+    if (!luaL_requirenumber(L, 1, &x))
+        return LUA_RAISED;
 
     lua_pushboolean(L, isfinite(x));
     return 1;
@@ -523,19 +649,26 @@ int luaopen_math(lua_State* L)
     pcg32_seed(&L->global->rngstate, seed);
 
     luaL_register(L, LUA_MATHLIBNAME, mathlib);
+    luaL_propagate(L);
 
     lua_pushnumber(L, LUAU_PI);
     lua_setfield(L, -2, "pi");
+    luaL_propagate(L);
     lua_pushnumber(L, HUGE_VAL);
     lua_setfield(L, -2, "huge");
+    luaL_propagate(L);
     lua_pushnumber(L, LUAU_NAN);
     lua_setfield(L, -2, "nan");
+    luaL_propagate(L);
     lua_pushnumber(L, LUAU_E);
     lua_setfield(L, -2, "e");
+    luaL_propagate(L);
     lua_pushnumber(L, LUAU_PHI);
     lua_setfield(L, -2, "phi");
+    luaL_propagate(L);
     lua_pushnumber(L, LUAU_SQRT2);
     lua_setfield(L, -2, "sqrt2");
+    luaL_propagate(L);
     lua_pushnumber(L, LUAU_TAU);
     lua_setfield(L, -2, "tau");
 

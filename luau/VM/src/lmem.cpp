@@ -234,10 +234,17 @@ struct lua_Page
 
 static_assert(offsetof(lua_Page, data) % 16 == 0, "data must be 16 byte aligned to provide properly aligned allocation of userdata objects");
 
+#if LUAU_ERRORS_AS_RETURNS
+void luaM_settoobig(lua_State* L)
+{
+    luaG_setrunerrorL(L, "memory allocation error: block too big");
+}
+#else
 l_noret luaM_toobig(lua_State* L)
 {
     luaG_runerror(L, "memory allocation error: block too big");
 }
+#endif
 
 enum class AllocationPath
 {
@@ -285,7 +292,7 @@ static lua_Page* newpage(lua_State* L, lua_Page** pageset, int pageSize, int blo
         if (nothrow)
             return nullptr;
         else
-            luaD_throw(L, LUA_ERRMEM);
+            luaD_raise(L, nullptr, LUA_ERRMEM);
     }
 
     ASAN_POISON_MEMORY_REGION(page->data, blockSize * blockCount);
@@ -330,6 +337,7 @@ LUAU_NOINLINE static lua_Page* newclasspage(lua_State* L, lua_Page** freepageset
     int blockCount = (pageSize - offsetof(lua_Page, data)) / blockSize;
 
     lua_Page* page = newpage<path, type, nothrow>(L, pageset, pageSize, blockSize, blockCount);
+    luaD_propagate(L, nullptr);
 
     // prepend a page to page freelist (which is empty because we only ever allocate a new page when it is!)
     LUAU_ASSERT(!freepageset[sizeClass]);
@@ -384,6 +392,7 @@ static void* newblock(lua_State* L, int sizeClass)
     if (!page)
     {
         page = newclasspage<AllocationPath::Frealloc, 0, nothrow>(L, g->freepages, debugpageset(&g->allpages), sizeClass, true);
+        luaD_propagate(L, nullptr);
 
         if (nothrow && !page)
             return nullptr;
@@ -439,7 +448,10 @@ static LUAU_FORCEINLINE void* newgcoblock(lua_State* L, int sizeClass)
 
     // slow path: no page in the freelist, allocate a new one
     if (!page)
+    {
         page = newclasspage<path, type, false>(L, freepages, allpages, sizeClass, false);
+        luaD_propagate(L, nullptr);
+    }
 
     LUAU_ASSERT(!page->prev);
     LUAU_ASSERT(page->freeList || page->freeNext >= 0);
@@ -553,13 +565,16 @@ static LUAU_FORCEINLINE void freegcoblock(lua_State* L, int sizeClass, void* blo
 
 void* luaM_new_(lua_State* L, size_t nsize, uint8_t memcat)
 {
+    luaD_propagate(L, nullptr);
+
     global_State* g = L->global;
 
     int nclass = sizeclass(nsize);
 
     void* block = nclass >= 0 ? newblock<false>(L, nclass) : (*g->frealloc)(g->ud, NULL, 0, nsize);
+    luaD_propagate(L, nullptr);
     if (block == NULL && nsize > 0)
-        luaD_throw(L, LUA_ERRMEM);
+        luaD_raise(L, nullptr, LUA_ERRMEM);
 
     g->totalbytes += nsize;
     g->memcatbytes[memcat] += nsize;
@@ -574,6 +589,8 @@ void* luaM_new_(lua_State* L, size_t nsize, uint8_t memcat)
 
 void* luaM_trynew_(lua_State* L, size_t nsize, uint8_t memcat)
 {
+    luaD_propagate(L, nullptr);
+
     LUAU_ASSERT(nsize != 0);
     global_State* g = L->global;
 
@@ -608,10 +625,12 @@ GCObject* luaM_newgco_(lua_State* L, size_t nsize, uint8_t memcat, int tt, int t
     if (nclass >= 0)
     {
         block = newgcoblock<AllocationPath::Frealloc, 0>(L, nclass);
+        luaD_propagate(L, nullptr);
     }
     else
     {
         lua_Page* page = newpage<AllocationPath::Frealloc, 0, false>(L, &g->allgcopages, offsetof(lua_Page, data) + int(nsize), int(nsize), 1);
+        luaD_propagate(L, nullptr);
 
         block = &page->data;
         ASAN_UNPOISON_MEMORY_REGION(block, page->blockSize);
@@ -621,7 +640,7 @@ GCObject* luaM_newgco_(lua_State* L, size_t nsize, uint8_t memcat, int tt, int t
     }
 
     if (block == NULL && nsize > 0)
-        luaD_throw(L, LUA_ERRMEM);
+        luaD_raise(L, nullptr, LUA_ERRMEM);
 
     g->totalbytes += nsize;
     g->memcatbytes[memcat] += nsize;
@@ -651,11 +670,13 @@ GCObject* luaM_newgcocaged_(lua_State* L, size_t nsize, uint8_t memcat, int tt, 
     if (nclass >= 0)
     {
         block = newgcoblock<AllocationPath::BufferFrealloc, LUA_TBUFFER>(L, nclass);
+        luaD_propagate(L, nullptr);
     }
     else
     {
         lua_Page* page =
             newpage<AllocationPath::BufferFrealloc, LUA_TBUFFER, false>(L, &g->allgcopages_cage, offsetof(lua_Page, data) + int(nsize), int(nsize), 1);
+        luaD_propagate(L, nullptr);
 
         block = &page->data;
         ASAN_UNPOISON_MEMORY_REGION(block, page->blockSize);
@@ -665,7 +686,7 @@ GCObject* luaM_newgcocaged_(lua_State* L, size_t nsize, uint8_t memcat, int tt, 
     }
 
     if (block == NULL && nsize > 0)
-        luaD_throw(L, LUA_ERRMEM);
+        luaD_raise(L, nullptr, LUA_ERRMEM);
 
     g->totalbytes += nsize;
     g->memcatbytes[memcat] += nsize;
@@ -689,9 +710,10 @@ GCObject* luaM_newgcofixed_(lua_State* L, size_t nsize, uint8_t memcat, int tt)
     LUAU_ASSERT(nclass >= 0);
 
     void* block = newgcoblock<AllocationPath::Frealloc, 0>(L, nclass);
+    luaD_propagate(L, nullptr);
 
     if (block == nullptr)
-        luaD_throw(L, LUA_ERRMEM);
+        luaD_raise(L, nullptr, LUA_ERRMEM);
 
     g->totalbytes += nsize;
     g->memcatbytes[memcat] += nsize;
@@ -811,6 +833,8 @@ void luaM_freegcocaged_(lua_State* L, GCObject* block, size_t osize, uint8_t mem
 
 void* luaM_realloc_(lua_State* L, void* block, size_t osize, size_t nsize, uint8_t memcat)
 {
+    luaD_propagate(L, block);
+
     global_State* g = L->global;
     LUAU_ASSERT((osize == 0) == (block == NULL));
 
@@ -827,8 +851,9 @@ void* luaM_realloc_(lua_State* L, void* block, size_t osize, size_t nsize, uint8
     if (nclass >= 0 || oclass >= 0)
     {
         result = nclass >= 0 ? newblock<false>(L, nclass) : (*g->frealloc)(g->ud, NULL, 0, nsize);
+        luaD_propagate(L, block);
         if (result == NULL && nsize > 0)
-            luaD_throw(L, LUA_ERRMEM);
+            luaD_raise(L, block, LUA_ERRMEM);
 
         if (osize > 0 && nsize > 0)
             memcpy(result, block, osize < nsize ? osize : nsize);
@@ -842,7 +867,7 @@ void* luaM_realloc_(lua_State* L, void* block, size_t osize, size_t nsize, uint8
     {
         result = (*g->frealloc)(g->ud, block, osize, nsize);
         if (result == NULL && nsize > 0)
-            luaD_throw(L, LUA_ERRMEM);
+            luaD_raise(L, block, LUA_ERRMEM);
     }
 
     LUAU_ASSERT((nsize == 0) == (result == NULL));

@@ -11,8 +11,12 @@ pub struct Build {
     max_cstack_size: usize,
     // Use longjmp instead of C++ exceptions
     use_longjmp: bool,
+    // Have errors as return values instead of longjmp or exceptions
+    errors_as_returns: bool,
     // Enable code generator (jit)
     enable_codegen: bool,
+    // Build the compiler
+    enable_compiler: bool,
     // Vector size, must be 3 (default) or 4
     vector_size: usize,
 }
@@ -22,6 +26,8 @@ pub struct Artifacts {
     lib_dir: PathBuf,
     libs: Vec<String>,
     cpp_stdlib: Option<String>,
+    runtime_lib_dirs: Vec<PathBuf>,
+    runtime_libs: Vec<String>,
 }
 
 impl Default for Build {
@@ -32,7 +38,9 @@ impl Default for Build {
             host: env::var("HOST").ok(),
             max_cstack_size: 1000000,
             use_longjmp: false,
+            errors_as_returns: false,
             enable_codegen: false,
+            enable_compiler: true,
             vector_size: 3,
         }
     }
@@ -84,11 +92,34 @@ impl Build {
         self
     }
 
+    /// Sets whether errors are propagated via return values instead of longjmp
+    /// or exceptions.
+    ///
+    /// Mutually exclusive with [`use_longjmp`](Self::use_longjmp).
+    ///
+    /// Default is false.
+    pub fn errors_as_returns(&mut self, enable: bool) -> &mut Build {
+        self.errors_as_returns = enable;
+        self
+    }
+
     /// Sets whether to enable the code generator (JIT).
     ///
     /// Default is false.
     pub fn enable_codegen(&mut self, enable: bool) -> &mut Build {
         self.enable_codegen = enable;
+        self
+    }
+
+    /// Sets whether to build the compiler.
+    ///
+    /// When disabled, only the VM / runtime is built. This means that
+    /// all code run must be precompiled to bytecode, and APIs such as
+    /// `loadstring` will not be available.
+    ///
+    /// Default is true.
+    pub fn enable_compiler(&mut self, enable: bool) -> &mut Build {
+        self.enable_compiler = enable;
         self
     }
 
@@ -147,6 +178,27 @@ impl Build {
             }
         }
 
+        let wasi_sysroot = if target == "wasm32-unknown-unknown" {
+            println!("cargo:rerun-if-env-changed=WASI_SYSROOT");
+            let sysroot = env::var_os("WASI_SYSROOT").map(PathBuf::from).expect(
+                "WASI_SYSROOT must point to a wasi-sdk (33 or newer) sysroot to build Luau for wasm32-unknown-unknown",
+            );
+            config
+                .flag("--target=wasm32-wasip1")
+                .flag(format!("--sysroot={}", sysroot.display()))
+                .flag("-isystem")
+                .flag(sysroot.join("include/wasm32-wasip1/eh/c++/v1"))
+                .flag("-isystem")
+                .flag(sysroot.join("include/wasm32-wasip1"))
+                .flag("-fexceptions")
+                .flag("-fwasm-exceptions")
+                .flag("-mllvm")
+                .flag("-wasm-use-legacy-eh=false");
+            Some(sysroot)
+        } else {
+            None
+        };
+
         if target.ends_with("emscripten") {
             // cc-rs unconditionally adds `-fno-exceptions` for wasm32.
             // We need to re-enable exceptions and switch to the
@@ -160,8 +212,15 @@ impl Build {
         config.define("LUA_VECTOR_SIZE", &*self.vector_size.to_string());
         config.define("LUA_API", "extern \"C\"");
 
+        assert!(
+            !(self.use_longjmp && self.errors_as_returns),
+            "`use_longjmp` and `errors_as_returns` are mutually exclusive"
+        );
         if self.use_longjmp {
             config.define("LUA_USE_LONGJMP", "1");
+        }
+        if self.errors_as_returns {
+            config.define("LUAU_ERRORS_AS_RETURNS", "1");
         }
 
         if cfg!(debug_assertions) {
@@ -177,12 +236,14 @@ impl Build {
         let ast_lib_name = "luauast";
         let ast_source_dir = luau_source_dir.join("Ast").join("src");
         let ast_include_dir = luau_source_dir.join("Ast").join("include");
-        config
-            .clone()
-            .include(&ast_include_dir)
-            .add_files_by_ext_sorted(&ast_source_dir, "cpp")
-            .out_dir(&build_dir)
-            .compile(ast_lib_name);
+        if self.enable_compiler {
+            config
+                .clone()
+                .include(&ast_include_dir)
+                .add_files_by_ext_sorted(&ast_source_dir, "cpp")
+                .out_dir(&build_dir)
+                .compile(ast_lib_name);
+        }
 
         // Build `CodeGen` library
         let codegen_lib_name = "luaucodegen";
@@ -217,56 +278,65 @@ impl Build {
         let bytecode_lib_name = "luaubytecode";
         let bytecode_source_dir = luau_source_dir.join("Bytecode").join("src");
         let bytecode_include_dir = luau_source_dir.join("Bytecode").join("include");
-        config
-            .clone()
-            .include(&bytecode_include_dir)
-            .add_files_by_ext_sorted(&bytecode_source_dir, "cpp")
-            .out_dir(&build_dir)
-            .compile(bytecode_lib_name);
+        let enable_bytecode = self.enable_compiler || self.enable_codegen;
+        if enable_bytecode {
+            config
+                .clone()
+                .include(&bytecode_include_dir)
+                .add_files_by_ext_sorted(&bytecode_source_dir, "cpp")
+                .out_dir(&build_dir)
+                .compile(bytecode_lib_name);
+        }
 
         // Build `Inliner` library
         let inliner_lib_name = "luauinliner";
         let inliner_source_dir = luau_source_dir.join("Inliner").join("src");
         let inliner_include_dir = luau_source_dir.join("Inliner").join("include");
-        config
-            .clone()
-            .include(&inliner_include_dir)
-            .include(&bytecode_include_dir)
-            .include(&bytecode_source_dir)
-            .include(&vm_include_dir)
-            .include(&vm_source_dir)
-            .define("LUAJITINLINER_API", "extern \"C\"")
-            .add_files_by_ext_sorted(&inliner_source_dir, "cpp")
-            .out_dir(&build_dir)
-            .compile(inliner_lib_name);
+        if enable_bytecode {
+            config
+                .clone()
+                .include(&inliner_include_dir)
+                .include(&bytecode_include_dir)
+                .include(&bytecode_source_dir)
+                .include(&vm_include_dir)
+                .include(&vm_source_dir)
+                .define("LUAJITINLINER_API", "extern \"C\"")
+                .add_files_by_ext_sorted(&inliner_source_dir, "cpp")
+                .out_dir(&build_dir)
+                .compile(inliner_lib_name);
+        }
 
         // Build `Compiler` library
         let compiler_lib_name = "luaucompiler";
         let compiler_source_dir = luau_source_dir.join("Compiler").join("src");
         let compiler_include_dir = luau_source_dir.join("Compiler").join("include");
-        config
-            .clone()
-            .include(&compiler_include_dir)
-            .include(&bytecode_include_dir)
-            .include(&ast_include_dir)
-            .define("LUACODE_API", "extern \"C\"")
-            .add_files_by_ext_sorted(&compiler_source_dir, "cpp")
-            .out_dir(&build_dir)
-            .compile(compiler_lib_name);
+        if self.enable_compiler {
+            config
+                .clone()
+                .include(&compiler_include_dir)
+                .include(&bytecode_include_dir)
+                .include(&ast_include_dir)
+                .define("LUACODE_API", "extern \"C\"")
+                .add_files_by_ext_sorted(&compiler_source_dir, "cpp")
+                .out_dir(&build_dir)
+                .compile(compiler_lib_name);
+        }
 
         // Build `Config` library
         let config_lib_name = "luauconfig";
         let config_source_dir = luau_source_dir.join("Config").join("src");
         let config_include_dir = luau_source_dir.join("Config").join("include");
-        config
-            .clone()
-            .include(&config_include_dir)
-            .include(&ast_include_dir)
-            .include(&compiler_include_dir)
-            .include(&vm_include_dir)
-            .add_files_by_ext_sorted(&config_source_dir, "cpp")
-            .out_dir(&build_dir)
-            .compile(config_lib_name);
+        if self.enable_compiler {
+            config
+                .clone()
+                .include(&config_include_dir)
+                .include(&ast_include_dir)
+                .include(&compiler_include_dir)
+                .include(&vm_include_dir)
+                .add_files_by_ext_sorted(&config_source_dir, "cpp")
+                .out_dir(&build_dir)
+                .compile(config_lib_name);
+        }
 
         // Build customization library
         let custom_lib_name = "luaucustom";
@@ -283,15 +353,17 @@ impl Build {
         let require_lib_name = "luaurequire";
         let require_source_dir = luau_source_dir.join("Require").join("src");
         let require_include_dir = luau_source_dir.join("Require").join("include");
-        config
-            .clone()
-            .include(&require_include_dir)
-            .include(&ast_include_dir)
-            .include(&config_include_dir)
-            .include(&vm_include_dir)
-            .add_files_by_ext_sorted(&require_source_dir, "cpp")
-            .out_dir(&build_dir)
-            .compile(require_lib_name);
+        if self.enable_compiler {
+            config
+                .clone()
+                .include(&require_include_dir)
+                .include(&ast_include_dir)
+                .include(&config_include_dir)
+                .include(&vm_include_dir)
+                .add_files_by_ext_sorted(&require_source_dir, "cpp")
+                .out_dir(&build_dir)
+                .compile(require_lib_name);
+        }
 
         // Build VM
         let vm_lib_name = "luauvm";
@@ -304,19 +376,33 @@ impl Build {
 
         let mut artifacts = Artifacts {
             lib_dir: build_dir,
-            libs: vec![
-                inliner_lib_name.to_string(),
-                vm_lib_name.to_string(),
-                bytecode_lib_name.to_string(),
-                compiler_lib_name.to_string(),
-                ast_lib_name.to_string(),
-                common_lib_name.to_string(),
-                config_lib_name.to_string(),
-                custom_lib_name.to_string(),
-                require_lib_name.to_string(),
-            ],
+            libs: [
+                (inliner_lib_name, enable_bytecode),
+                (vm_lib_name, true),
+                (bytecode_lib_name, enable_bytecode),
+                (compiler_lib_name, self.enable_compiler),
+                (ast_lib_name, self.enable_compiler),
+                (common_lib_name, true),
+                (config_lib_name, self.enable_compiler),
+                (custom_lib_name, true),
+                (require_lib_name, self.enable_compiler),
+            ]
+            .into_iter()
+            .filter(|&(_, enabled)| enabled)
+            .map(|(name, _)| name.to_string())
+            .collect(),
             cpp_stdlib: Self::get_cpp_link_stdlib(target, host),
+            runtime_lib_dirs: Vec::new(),
+            runtime_libs: Vec::new(),
         };
+
+        if let Some(sysroot) = wasi_sysroot {
+            let lib_dir = sysroot.join("lib").join("wasm32-wasip1");
+            artifacts.runtime_lib_dirs = vec![lib_dir.join("eh"), lib_dir];
+            artifacts.runtime_libs = ["c++abi", "unwind", "c", "wasi-emulated-process-clocks"]
+                .map(String::from)
+                .to_vec();
+        }
 
         if self.enable_codegen {
             artifacts.libs.push(codegen_lib_name.to_string());
@@ -352,6 +438,8 @@ impl Build {
             Some("c++".to_string())
         } else if target.contains("android") {
             Some("c++_shared".to_string())
+        } else if target == "wasm32-unknown-unknown" {
+            Some("c++".to_string())
         } else {
             Some("stdc++".to_string())
         }
@@ -374,6 +462,12 @@ impl Artifacts {
         }
         if let Some(ref cpp_stdlib) = self.cpp_stdlib {
             println!("cargo:rustc-link-lib={cpp_stdlib}");
+        }
+        for dir in &self.runtime_lib_dirs {
+            println!("cargo:rustc-link-search=native={}", dir.display());
+        }
+        for lib in &self.runtime_libs {
+            println!("cargo:rustc-link-lib={lib}");
         }
         if let Some(version) = self.version() {
             println!("cargo:rustc-env=LUAU_VERSION={version}");

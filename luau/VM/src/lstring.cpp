@@ -45,6 +45,7 @@ unsigned int luaS_hash(const char* str, size_t len)
 void luaS_resize(lua_State* L, int newsize)
 {
     TString** newhash = luaM_newarray(L, newsize, TString*, 0);
+    luaD_propagate(L);
     stringtable* tb = &L->global->strt;
     for (int i = 0; i < newsize; i++)
         newhash[i] = NULL;
@@ -71,9 +72,10 @@ void luaS_resize(lua_State* L, int newsize)
 static TString* newlstr(lua_State* L, const char* str, size_t l, unsigned int h)
 {
     if (l > MAXSSIZE)
-        luaM_toobig(L);
+        luaM_raisetoobig(L, nullptr);
 
     TString* ts = luaM_newgco(L, TString, sizestring(l), L->activememcat, LUA_TSTRING);
+    luaD_propagate(L, nullptr);
     luaC_init(L, ts, LUA_TSTRING);
     ts->atom = ATOM_UNDEF;
     ts->hash = h;
@@ -89,7 +91,10 @@ static TString* newlstr(lua_State* L, const char* str, size_t l, unsigned int h)
 
     tb->nuse++;
     if (tb->nuse > cast_to(uint32_t, tb->size) && tb->size <= INT_MAX / 2)
+    {
         luaS_resize(L, tb->size * 2); // too crowded
+        luaD_propagate(L, nullptr);
+    }
 
     return ts;
 }
@@ -97,9 +102,10 @@ static TString* newlstr(lua_State* L, const char* str, size_t l, unsigned int h)
 TString* luaS_bufstart(lua_State* L, size_t size)
 {
     if (size > MAXSSIZE)
-        luaM_toobig(L);
+        luaM_raisetoobig(L, nullptr);
 
     TString* ts = luaM_newgco(L, TString, sizestring(size), L->activememcat, LUA_TSTRING);
+    luaD_propagate(L, nullptr);
     luaC_init(L, ts, LUA_TSTRING);
     ts->atom = ATOM_UNDEF;
     ts->hash = 0; // computed in luaS_buffinish
@@ -139,7 +145,10 @@ TString* luaS_buffinish(lua_State* L, TString* ts)
 
     tb->nuse++;
     if (tb->nuse > cast_to(uint32_t, tb->size) && tb->size <= INT_MAX / 2)
+    {
         luaS_resize(L, tb->size * 2); // too crowded
+        luaD_propagate(L, nullptr);
+    }
 
     return ts;
 }

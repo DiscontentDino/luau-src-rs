@@ -32,6 +32,7 @@ static Proto* getluaproto(CallInfo* ci)
 
 int lua_getargument(lua_State* L, int level, int n)
 {
+    api_checknoerror(L);
     if (unsigned(level) >= unsigned(L->ci - L->base_ci))
         return 0;
 
@@ -64,6 +65,7 @@ int lua_getargument(lua_State* L, int level, int n)
 
 const char* lua_getlocal(lua_State* L, int level, int n)
 {
+    api_checknoerror(L);
     if (unsigned(level) >= unsigned(L->ci - L->base_ci))
         return NULL;
 
@@ -85,6 +87,7 @@ const char* lua_getlocal(lua_State* L, int level, int n)
 
 const char* lua_setlocal(lua_State* L, int level, int n)
 {
+    api_checknoerror(L);
     api_check(L, L->top - L->base >= 1);
 
     if (unsigned(level) >= unsigned(L->ci - L->base_ci))
@@ -195,6 +198,7 @@ static Closure* auxgetinfo(lua_State* L, const char* what, lua_Debug* ar, Closur
 
 void lua_callhook(lua_State* L, lua_Hook hook, void* userdata)
 {
+    api_checknoerror(L);
     api_check(L, hook != nullptr);
     api_check(L, L->ci != L->base_ci);
 
@@ -203,11 +207,13 @@ void lua_callhook(lua_State* L, lua_Hook hook, void* userdata)
 
 int lua_stackdepth(lua_State* L)
 {
+    api_checknoerror(L);
     return int(L->ci - L->base_ci);
 }
 
 int lua_getinfo(lua_State* L, int level, const char* what, lua_Debug* ar)
 {
+    api_checknoerror(L);
     Closure* f = NULL;
     CallInfo* ci = NULL;
     if (level < 0)
@@ -238,6 +244,7 @@ int lua_getinfo(lua_State* L, int level, const char* what, lua_Debug* ar)
             luaC_threadbarrier(L);
             setclvalue(L, L->top, fcl);
             incr_top(L);
+            luaD_propagate(L, 0);
         }
     }
     return f ? 1 : 0;
@@ -262,6 +269,82 @@ static const char* getfuncname(Closure* cl)
     return nullptr;
 }
 
+#if LUAU_ERRORS_AS_RETURNS
+void luaG_settypeerrorL(lua_State* L, const TValue* o, const char* op)
+{
+    const char* t = luaT_objtypename(L, o);
+
+    luaG_setrunerrorL(L, "attempt to %s a %s value", op, t);
+}
+
+void luaG_setforerrorL(lua_State* L, const TValue* o, const char* what)
+{
+    const char* t = luaT_objtypename(L, o);
+
+    luaG_setrunerrorL(L, "invalid 'for' %s (number expected, got %s)", what, t);
+}
+
+void luaG_setconcaterror(lua_State* L, StkId p1, StkId p2)
+{
+    const char* t1 = luaT_objtypename(L, p1);
+    const char* t2 = luaT_objtypename(L, p2);
+
+    luaG_setrunerrorL(L, "attempt to concatenate %s with %s", t1, t2);
+}
+
+void luaG_setaritherror(lua_State* L, const TValue* p1, const TValue* p2, TMS op)
+{
+    const char* t1 = luaT_objtypename(L, p1);
+    const char* t2 = luaT_objtypename(L, p2);
+    const char* opname = luaT_eventname[op] + 2; // skip __ from metamethod name
+
+    if (t1 == t2)
+        luaG_setrunerrorL(L, "attempt to perform arithmetic (%s) on %s", opname, t1);
+    else
+        luaG_setrunerrorL(L, "attempt to perform arithmetic (%s) on %s and %s", opname, t1, t2);
+}
+
+void luaG_setordererror(lua_State* L, const TValue* p1, const TValue* p2, TMS op)
+{
+    const char* t1 = luaT_objtypename(L, p1);
+    const char* t2 = luaT_objtypename(L, p2);
+    const char* opname = (op == TM_LT) ? "<" : (op == TM_LE) ? "<=" : "==";
+
+    luaG_setrunerrorL(L, "attempt to compare %s %s %s", t1, opname, t2);
+}
+
+void luaG_setindexerror(lua_State* L, const TValue* p1, const TValue* p2)
+{
+    const char* t1 = luaT_objtypename(L, p1);
+    const char* t2 = luaT_objtypename(L, p2);
+    const TString* key = ttisstring(p2) ? tsvalue(p2) : 0;
+
+    if (key && key->len <= 64) // limit length to make sure we don't generate very long error messages for very long keys
+        luaG_setrunerrorL(L, "attempt to index %s with '%s'", t1, getstr(key));
+    else
+        luaG_setrunerrorL(L, "attempt to index %s with %s", t1, t2);
+}
+
+void luaG_setmissingmembererror(lua_State* L, const TValue* p1, const TValue* p2)
+{
+    if (!ttisstring(p2))
+        luaG_setrunerrorL(L, "cannot index %s with a %s", luaT_objtypename(L, p1), luaT_objtypename(L, p2));
+    else
+        luaG_setrunerrorL(L, "this %s does not have a key named '%s'", luaT_objtypename(L, p1), getstr(tsvalue(p2)));
+}
+
+void luaG_setmethoderror(lua_State* L, const TValue* p1, const TString* p2)
+{
+    const char* t1 = luaT_objtypename(L, p1);
+
+    luaG_setrunerrorL(L, "attempt to call missing method '%s' of %s", getstr(p2), t1);
+}
+
+void luaG_setreadonlyerror(lua_State* L)
+{
+    luaG_setrunerrorL(L, "attempt to modify a readonly table");
+}
+#else
 l_noret luaG_typeerrorL(lua_State* L, const TValue* o, const char* op)
 {
     const char* t = luaT_objtypename(L, o);
@@ -336,6 +419,7 @@ l_noret luaG_readonlyerror(lua_State* L)
 {
     luaG_runerror(L, "attempt to modify a readonly table");
 }
+#endif
 
 static void pusherror(lua_State* L, const char* msg)
 {
@@ -354,6 +438,23 @@ static void pusherror(lua_State* L, const char* msg)
     }
 }
 
+#if LUAU_ERRORS_AS_RETURNS
+void luaG_setrunerrorL(lua_State* L, const char* fmt, ...)
+{
+    va_list argp;
+    va_start(argp, fmt);
+    char result[LUA_BUFFERSIZE];
+    vsnprintf(result, sizeof(result), fmt, argp);
+    va_end(argp);
+
+    lua_rawcheckstack(L, 1);
+
+    if (!L->global->errcode)
+        pusherror(L, result);
+    if (!L->global->errcode)
+        luaD_seterror(L, LUA_ERRRUN);
+}
+#else
 l_noret luaG_runerrorL(lua_State* L, const char* fmt, ...)
 {
     va_list argp;
@@ -367,6 +468,7 @@ l_noret luaG_runerrorL(lua_State* L, const char* fmt, ...)
     pusherror(L, result);
     luaD_throw(L, LUA_ERRRUN);
 }
+#endif
 
 void luaG_pusherror(lua_State* L, const char* error)
 {
@@ -395,6 +497,7 @@ void luaG_breakpoint(lua_State* L, Proto* p, int line, bool enable)
             if (!p->debuginsn)
             {
                 p->debuginsn = luaM_newarray(L, p->sizecode, uint8_t, p->memcat);
+                luaD_propagate(L);
                 for (int j = 0; j < p->sizecode; ++j)
                     p->debuginsn[j] = LUAU_INSN_OP(p->code[j]);
             }
@@ -470,6 +573,7 @@ int luaG_hasnative(lua_State* L, int level)
 
 void lua_singlestep(lua_State* L, int enabled)
 {
+    api_checknoerror(L);
     L->singlestep = bool(enabled);
 }
 
@@ -531,6 +635,7 @@ static int getnextline(Proto* p, int line)
 
 int lua_breakpoint(lua_State* L, int funcindex, int line, int enabled)
 {
+    api_checknoerror(L);
     const TValue* func = luaA_toobject(L, funcindex);
     api_check(L, ttisfunction(func) && !clvalue(func)->isC);
 
@@ -547,6 +652,7 @@ int lua_breakpoint(lua_State* L, int funcindex, int line, int enabled)
 
 int lua_atbreakpoint(lua_State* L)
 {
+    api_checknoerror(L);
     return luaG_onbreak(L) ? 1 : 0;
 }
 
@@ -578,6 +684,7 @@ static void getcoverage(Proto* p, int depth, int* buffer, size_t size, void* con
 
 void lua_getcoverage(lua_State* L, int funcindex, void* context, lua_Coverage callback)
 {
+    api_checknoerror(L);
     const TValue* func = luaA_toobject(L, funcindex);
     api_check(L, ttisfunction(func) && !clvalue(func)->isC);
 
@@ -588,6 +695,7 @@ void lua_getcoverage(lua_State* L, int funcindex, void* context, lua_Coverage ca
         return;
 
     int* buffer = luaM_newarray(L, size, int, 0);
+    luaD_propagate(L);
 
     getcoverage(p, 0, buffer, size, context, callback);
 
@@ -635,6 +743,7 @@ static void getcounters(lua_State* L, Proto* p, void* context, lua_CounterFuncti
 
 void lua_getcounters(lua_State* L, int funcindex, void* context, lua_CounterFunction functionvisit, lua_CounterValue countervisit)
 {
+    api_checknoerror(L);
     const TValue* func = luaA_toobject(L, funcindex);
     api_check(L, ttisfunction(func) && !clvalue(func)->isC);
 
@@ -656,6 +765,7 @@ static size_t append(char* buf, size_t bufsize, size_t offset, const char* data)
 
 const char* lua_debugtrace(lua_State* L)
 {
+    api_checknoerror(L);
     static char buf[4096];
 
     const int limit1 = 10;

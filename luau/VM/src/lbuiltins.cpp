@@ -864,7 +864,9 @@ static int luauF_char(lua_State* L, StkId res, TValue* arg0, int nresults, StkId
 
         buffer[nparams] = 0;
 
-        setsvalue(L, res, luaS_newlstr(L, buffer, nparams));
+        TString* str = luaS_newlstr(L, buffer, nparams);
+        luaD_propagate(L, -1);
+        setsvalue(L, res, str);
         return 1;
     }
 
@@ -910,7 +912,9 @@ static int luauF_sub(lua_State* L, StkId res, TValue* arg0, int nresults, StkId 
 
         if (i >= 1 && j >= i && unsigned(j - 1) < unsigned(ts->len))
         {
-            setsvalue(L, res, luaS_newlstr(L, getstr(ts) + (i - 1), j - i + 1));
+            TString* str = luaS_newlstr(L, getstr(ts) + (i - 1), j - i + 1);
+            luaD_propagate(L, -1);
+            setsvalue(L, res, str);
             return 1;
         }
     }
@@ -1004,7 +1008,9 @@ static int luauF_rawset(lua_State* L, StkId res, TValue* arg0, int nresults, Stk
             return -1;
 
         setobj2s(L, res, arg0);
-        setobj2t(L, luaH_set(L, t, args), args + 1);
+        TValue* slot = luaH_set(L, t, args);
+        luaD_propagate(L, -1);
+        setobj2t(L, slot, args + 1);
         luaC_barriert(L, t, args + 1);
         return 1;
     }
@@ -1021,7 +1027,9 @@ static int luauF_tinsert(lua_State* L, StkId res, TValue* arg0, int nresults, St
             return -1;
 
         int pos = luaH_getn(t) + 1;
-        setobj2t(L, luaH_setnum(L, t, pos), args);
+        TValue* slot = luaH_setnum(L, t, pos);
+        luaD_propagate(L, -1);
+        setobj2t(L, slot, args);
         luaC_barriert(L, t, args);
         return 0;
     }
@@ -1303,6 +1311,7 @@ static int luauF_tostring(lua_State* L, StkId res, TValue* arg0, int nresults, S
         case LUA_TBOOLEAN:
         {
             TString* s = bvalue(arg0) ? luaS_newliteral(L, "true") : luaS_newliteral(L, "false");
+            luaD_propagate(L, -1);
             setsvalue(L, res, s);
             return 1;
         }
@@ -1313,7 +1322,9 @@ static int luauF_tostring(lua_State* L, StkId res, TValue* arg0, int nresults, S
 
             char s[LUAI_MAXNUM2STR];
             char* e = luai_num2str(s, nvalue(arg0));
-            setsvalue(L, res, luaS_newlstr(L, s, e - s));
+            TString* str = luaS_newlstr(L, s, e - s);
+            luaD_propagate(L, -1);
+            setsvalue(L, res, str);
             return 1;
         }
         case LUA_TSTRING:
@@ -1328,7 +1339,9 @@ static int luauF_tostring(lua_State* L, StkId res, TValue* arg0, int nresults, S
 
             char s[LUAI_MAXINT2STR];
             char* e = luai_int2str(s, lvalue(arg0));
-            setsvalue(L, res, luaS_newlstr(L, s, e - s));
+            TString* str = luaS_newlstr(L, s, e - s);
+            luaD_propagate(L, -1);
+            setsvalue(L, res, str);
             return 1;
         }
         }

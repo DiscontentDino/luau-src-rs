@@ -55,7 +55,7 @@ RuntimeNavigationContext::RuntimeNavigationContext(luarequire_Configuration* con
         RuntimeLuauConfigTimer* timer = static_cast<RuntimeLuauConfigTimer*>(lua_getthreaddata(L));
         LUAU_ASSERT(timer);
         if (timer->isFinished())
-            luaL_errorL(L, "configuration execution timed out");
+            luaL_raiseerrorL(L, "configuration execution timed out");
     };
 }
 

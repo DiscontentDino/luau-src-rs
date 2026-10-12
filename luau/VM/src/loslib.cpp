@@ -84,35 +84,53 @@ static void setboolfield(lua_State* L, const char* key, int value)
     lua_setfield(L, -2, key);
 }
 
-static int getboolfield(lua_State* L, const char* key)
+static bool getboolfield(lua_State* L, const char* key, int* out)
 {
     int res;
     lua_rawgetfield(L, -1, key);
+    if (lua_haserror(L))
+        return false;
     res = lua_isnil(L, -1) ? -1 : lua_toboolean(L, -1);
     lua_pop(L, 1);
-    return res;
+    *out = res;
+    return true;
 }
 
-static int getfield(lua_State* L, const char* key, int d)
+static bool getfield(lua_State* L, const char* key, int d, int* out)
 {
     int res;
     lua_rawgetfield(L, -1, key);
+    if (lua_haserror(L))
+        return false;
     if (lua_isnumber(L, -1))
         res = (int)lua_tointeger(L, -1);
     else
     {
         if (d < 0)
-            luaL_error(L, "field '%s' missing in date table", key);
+        {
+            luaL_raiseerror(L, "field '%s' missing in date table", key);
+            return false;
+        }
         res = d;
     }
     lua_pop(L, 1);
-    return res;
+    *out = res;
+    return true;
 }
 
 static int os_date(lua_State* L)
 {
-    const char* s = luaL_optstring(L, 1, "%c");
-    time_t t = luaL_opt(L, (time_t)luaL_checknumber, 2, time(NULL));
+    const char* s;
+    if (!luaL_requireoptstring(L, 1, "%c", &s))
+        return LUA_RAISED;
+    time_t t = time(NULL);
+    if (!lua_isnoneornil(L, 2))
+    {
+        double n;
+        if (!luaL_requirenumber(L, 2, &n))
+            return LUA_RAISED;
+        t = (time_t)n;
+    }
 
     struct tm tm;
     struct tm* stm;
@@ -134,14 +152,23 @@ static int os_date(lua_State* L)
     else if (strcmp(s, "*t") == 0)
     {
         lua_createtable(L, 0, 9); // 9 = number of fields
+        luaL_propagate(L);
         setfield(L, "sec", stm->tm_sec);
+        luaL_propagate(L);
         setfield(L, "min", stm->tm_min);
+        luaL_propagate(L);
         setfield(L, "hour", stm->tm_hour);
+        luaL_propagate(L);
         setfield(L, "day", stm->tm_mday);
+        luaL_propagate(L);
         setfield(L, "month", stm->tm_mon + 1);
+        luaL_propagate(L);
         setfield(L, "year", stm->tm_year + 1900);
+        luaL_propagate(L);
         setfield(L, "wday", stm->tm_wday + 1);
+        luaL_propagate(L);
         setfield(L, "yday", stm->tm_yday + 1);
+        luaL_propagate(L);
         setboolfield(L, "isdst", stm->tm_isdst);
     }
     else
@@ -160,7 +187,7 @@ static int os_date(lua_State* L)
             }
             else if (strchr(LUA_STRFTIMEOPTIONS, *(s + 1)) == 0)
             {
-                luaL_argerror(L, 1, "invalid conversion specifier");
+                return luaL_raiseargerror(L, 1, "invalid conversion specifier");
             }
             else
             {
@@ -170,6 +197,7 @@ static int os_date(lua_State* L)
                 reslen = strftime(buff, sizeof(buff), cc, stm);
                 luaL_addlstring(&b, buff, reslen);
             }
+            luaL_propagate(L);
         }
         luaL_pushresult(&b);
     }
@@ -184,15 +212,16 @@ static int os_time(lua_State* L)
     else
     {
         struct tm ts;
-        luaL_checktype(L, 1, LUA_TTABLE);
+        if (!luaL_requiretype(L, 1, LUA_TTABLE))
+            return LUA_RAISED;
         lua_settop(L, 1); // make sure table is at the top
-        ts.tm_sec = getfield(L, "sec", 0);
-        ts.tm_min = getfield(L, "min", 0);
-        ts.tm_hour = getfield(L, "hour", 12);
-        ts.tm_mday = getfield(L, "day", -1);
-        ts.tm_mon = getfield(L, "month", -1) - 1;
-        ts.tm_year = getfield(L, "year", -1) - 1900;
-        ts.tm_isdst = getboolfield(L, "isdst");
+        int month, year;
+        if (!getfield(L, "sec", 0, &ts.tm_sec) || !getfield(L, "min", 0, &ts.tm_min) || !getfield(L, "hour", 12, &ts.tm_hour) ||
+            !getfield(L, "day", -1, &ts.tm_mday) || !getfield(L, "month", -1, &month) || !getfield(L, "year", -1, &year) ||
+            !getboolfield(L, "isdst", &ts.tm_isdst))
+            return LUA_RAISED;
+        ts.tm_mon = month - 1;
+        ts.tm_year = year - 1900;
 
         // Note: upstream Lua uses mktime() here which assumes input is local time, but we prefer UTC for consistency
         t = os_timegm(&ts);
@@ -206,7 +235,10 @@ static int os_time(lua_State* L)
 
 static int os_difftime(lua_State* L)
 {
-    lua_pushnumber(L, difftime((time_t)(luaL_checknumber(L, 1)), (time_t)(luaL_optnumber(L, 2, 0))));
+    double t1, t2;
+    if (!luaL_requirenumber(L, 1, &t1) || !luaL_requireoptnumber(L, 2, 0, &t2))
+        return LUA_RAISED;
+    lua_pushnumber(L, difftime((time_t)(t1), (time_t)(t2)));
     return 1;
 }
 

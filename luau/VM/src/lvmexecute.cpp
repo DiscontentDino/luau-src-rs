@@ -19,7 +19,6 @@
 #include <string.h>
 
 LUAU_FASTFLAGVARIABLE(DebugLuauUserDefinedClassesRuntime)
-LUAU_FASTFLAGVARIABLE(LuauCallFeedback)
 LUAU_FASTFLAGVARIABLE(LuauPromoteProto)
 LUAU_FASTFLAGVARIABLE(LuauBackedgeHeapCheck)
 LUAU_FLAGVERSION(LuauBackedgeHeapCheck, 2)
@@ -56,6 +55,17 @@ LUAU_FASTFLAGVARIABLE(LuauFastpcallInterrupt)
 // This makes sure that we save the pc (in case the Lua call needs to generate a backtrace) before the call,
 // and restores the stack pointer after in case stack gets reallocated
 // Should only be used on the slow paths.
+#if LUAU_ERRORS_AS_RETURNS
+#define VM_PROTECT(x) \
+    { \
+        L->ci->savedpc = pc; \
+        { \
+            x; \
+        }; \
+        base = L->base; \
+        luaD_propagate(L); \
+    }
+#else
 #define VM_PROTECT(x) \
     { \
         L->ci->savedpc = pc; \
@@ -64,6 +74,7 @@ LUAU_FASTFLAGVARIABLE(LuauFastpcallInterrupt)
         }; \
         base = L->base; \
     }
+#endif
 
 // To avoid VM_PROTECT(luaC_checkGC(L)) overhead for cases where GC step is not needed
 #define VM_CHECK_GC(x) \
@@ -130,7 +141,7 @@ LUAU_FASTFLAGVARIABLE(LuauFastpcallInterrupt)
         VM_DISPATCH_OP(LOP_JUMPXEQKB), VM_DISPATCH_OP(LOP_JUMPXEQKN), VM_DISPATCH_OP(LOP_JUMPXEQKS), VM_DISPATCH_OP(LOP_IDIV), \
         VM_DISPATCH_OP(LOP_IDIVK), VM_DISPATCH_OP(LOP_GETUDATAKS), VM_DISPATCH_OP(LOP_SETUDATAKS), VM_DISPATCH_OP(LOP_NAMECALLUDATA), \
         VM_DISPATCH_OP(LOP_NEWCLASSMEMBER), VM_DISPATCH_OP(LOP_CALLFB), VM_DISPATCH_OP(LOP_CMPPROTO), VM_DISPATCH_OP(LOP_FASTPCALL), \
-        VM_DISPATCH_OP(LOP_NEWCLASS),
+        VM_DISPATCH_OP(LOP_NEWCLASS), VM_DISPATCH_OP(LOP_CONSTRUCT), VM_DISPATCH_OP(LOP_FINCONSTRUCT),
 
 #if defined(__GNUC__) || defined(__clang__)
 #define VM_USE_CGOTO 1
@@ -186,6 +197,7 @@ LUAU_NOINLINE void luau_callhook(lua_State* L, lua_Hook hook, void* userdata)
         L->ci->savedpc++;
 
     luaD_checkstack(L, LUA_MINSTACK); // ensure minimum stack size
+    luaD_propagate(L);
     L->ci->top = L->top + LUA_MINSTACK;
     LUAU_ASSERT(L->ci->top <= L->stack_last);
 
@@ -195,6 +207,7 @@ LUAU_NOINLINE void luau_callhook(lua_State* L, lua_Hook hook, void* userdata)
     ar.userdata = userdata;
 
     hook(L, &ar);
+    luaD_propagate(L);
 
     L->ci->savedpc = oldsavedpc;
 
@@ -224,6 +237,7 @@ inline bool luau_skipstep(uint8_t op)
 static LUAU_NOINLINE void luau_setupcci(lua_State* L, int nresults, StkId fun)
 {
     CallInfo* ci = incr_ci(L);
+    luaD_propagate(L);
 
     ci->func = fun;
     ci->p = getproto(clvalue(fun));
@@ -236,6 +250,7 @@ static LUAU_NOINLINE void luau_setupcci(lua_State* L, int nresults, StkId fun)
     L->base = fun + 1;
 
     luaD_checkstackfornewci(L, LUA_MINSTACK);
+    luaD_propagate(L);
 
     LUAU_ASSERT(ci->top <= L->stack_last);
     LUAU_ASSERT(ttisfunction(ci->func));
@@ -669,7 +684,7 @@ reentry:
                         {
                             const TValue* offset = luaH_getstr(inst->lclass->memberstooffset, tsvalue(kv));
                             if (ttisnil(offset))
-                                luaG_missingmembererror(L, rb, kv);
+                                luaG_raisemissingmembererror(L, , rb, kv);
                             const uint32_t offsetnum = uint32_t(nvalue(offset));
                             setobj2s(L, ra, luaR_lookupmemberatoffset(inst, offsetnum));
                             VM_PATCH_C(pc - 2, offsetnum);
@@ -714,6 +729,7 @@ reentry:
                         VM_PROTECT_PC(); // set may fail
 
                         TValue* res = luaH_setstr(L, h, tsvalue(kv));
+                        luaD_propagate(L);
                         int cachedslot = gval2slot(h, res);
                         // save cachedslot to accelerate future lookups; patches currently executing instruction since pc-2 rolls back two pc++
                         VM_PATCH_C(pc - 2, cachedslot);
@@ -891,6 +907,7 @@ reentry:
 
                 // note: we save closure to stack early in case the code below wants to capture it by value
                 Closure* ncl = luaF_newLclosure(L, pv->nups, cl->env, pv);
+                luaD_propagate(L);
                 setclvalue(L, ra, ncl);
 
                 for (int ui = 0; ui < pv->nups; ++ui)
@@ -905,8 +922,12 @@ reentry:
                         break;
 
                     case LCT_REF:
-                        setupvalue(L, &ncl->l.uprefs[ui], luaF_findupval(L, VM_REG(LUAU_INSN_B(uinsn))));
+                    {
+                        UpVal* uv = luaF_findupval(L, VM_REG(LUAU_INSN_B(uinsn)));
+                        luaD_propagate(L);
+                        setupvalue(L, &ncl->l.uprefs[ui], uv);
                         break;
+                    }
 
                     case LCT_UPVAL:
                         setobj(L, &ncl->l.uprefs[ui], VM_UV(LUAU_INSN_B(uinsn)));
@@ -968,7 +989,7 @@ reentry:
                         // recompute ra since stack might have been reallocated
                         ra = VM_REG(LUAU_INSN_A(insn));
                         if (ttisnil(ra))
-                            luaG_methoderror(L, ra + 1, tsvalue(kv));
+                            luaG_raisemethoderror(L, , ra + 1, tsvalue(kv));
                     }
                 }
                 else
@@ -1009,7 +1030,7 @@ reentry:
                             // recompute ra since stack might have been reallocated
                             ra = VM_REG(LUAU_INSN_A(insn));
                             if (ttisnil(ra))
-                                luaG_methoderror(L, ra + 1, tsvalue(kv));
+                                luaG_raisemethoderror(L, , ra + 1, tsvalue(kv));
                         }
                     }
                     else if (LUAU_UNLIKELY(FFlag::DebugLuauUserDefinedClassesRuntime && ttisobject(rb)))
@@ -1027,7 +1048,7 @@ reentry:
                         {
                             const TValue* offset = luaH_getstr(inst->lclass->memberstooffset, tsvalue(kv));
                             if (ttisnil(offset))
-                                luaG_missingmembererror(L, rb, kv);
+                                luaG_raisemissingmembererror(L, , rb, kv);
                             const uint32_t offsetnum = uint32_t(nvalue(offset));
                             setobj2s(L, ra + 1, rb);
                             setobj2s(L, ra, luaR_lookupmemberatoffset(inst, offsetnum));
@@ -1042,19 +1063,11 @@ reentry:
                         // recompute ra since stack might have been reallocated
                         ra = VM_REG(LUAU_INSN_A(insn));
                         if (ttisnil(ra))
-                            luaG_methoderror(L, ra + 1, tsvalue(kv));
+                            luaG_raisemethoderror(L, , ra + 1, tsvalue(kv));
                     }
                 }
 
-                if (LUAU_UNLIKELY(FFlag::LuauCallFeedback))
-                {
-                    VM_NEXT();
-                }
-                else
-                {
-                    // intentional fallthrough to CALL
-                    LUAU_ASSERT(LUAU_INSN_OP(*pc) == LOP_CALL);
-                }
+                VM_NEXT();
             }
 
             VM_CASE(LOP_CALL)
@@ -1075,6 +1088,7 @@ reentry:
                     VM_PROTECT_PC(); // luaV_tryfuncTM may fail
 
                     luaV_tryfuncTM(L, ra);
+                    luaD_propagate(L);
                     argtop++; // __call adds an extra self
                 }
 
@@ -1082,6 +1096,7 @@ reentry:
                 L->ci->savedpc = pc;
 
                 CallInfo* ci = incr_ci(L);
+                luaD_propagate(L);
                 ci->func = ra;
                 ci->p = getproto(ccl);
                 ci->base = ra + 1;
@@ -1097,6 +1112,7 @@ reentry:
                 // this is because we're going to modify base/savedpc manually anyhow
                 // crucially, we can't use ra/argtop after this line
                 luaD_checkstackfornewci(L, ccl->stacksize);
+                luaD_propagate(L);
 
                 LUAU_ASSERT(ci->top <= L->stack_last);
 
@@ -1125,10 +1141,14 @@ reentry:
                 {
                     lua_CFunction func = ccl->c.f;
                     int n = func(L);
+                    luaD_propagate(L);
 
                     // yield
                     if (n < 0)
+                    {
+                        LUAU_ASSERT(isyielded(L));
                         goto exit;
+                    }
 
                     // ci is our callinfo, cip is our parent
                     CallInfo* ci = L->ci;
@@ -1178,6 +1198,7 @@ reentry:
                     VM_PROTECT_PC(); // luaV_tryfuncTM may fail
 
                     luaV_tryfuncTM(L, ra);
+                    luaD_propagate(L);
                     argtop++; // __call adds an extra self
                 }
 
@@ -1185,6 +1206,7 @@ reentry:
                 L->ci->savedpc = pc;
 
                 CallInfo* ci = incr_ci(L);
+                luaD_propagate(L);
                 ci->func = ra;
                 ci->p = getproto(ccl);
                 ci->base = ra + 1;
@@ -1200,6 +1222,7 @@ reentry:
                 // this is because we're going to modify base/savedpc manually anyhow
                 // crucially, we can't use ra/argtop after this line
                 luaD_checkstackfornewci(L, ccl->stacksize);
+                luaD_propagate(L);
 
                 LUAU_ASSERT(ci->top <= L->stack_last);
 
@@ -1237,10 +1260,14 @@ reentry:
 
                     lua_CFunction func = ccl->c.f;
                     int n = func(L);
+                    luaD_propagate(L);
 
                     // yield
                     if (n < 0)
+                    {
+                        LUAU_ASSERT(isyielded(L));
                         goto exit;
+                    }
 
                     // ci is our callinfo, cip is our parent
                     CallInfo* ci = L->ci;
@@ -2467,7 +2494,9 @@ reentry:
 
                 VM_PROTECT_PC(); // luaH_new may fail due to OOM
 
-                sethvalue(L, ra, luaH_new(L, aux, b == 0 ? 0 : (1 << (b - 1))));
+                LuaTable* nt = luaH_new(L, aux, b == 0 ? 0 : (1 << (b - 1)));
+                luaD_propagate(L);
+                sethvalue(L, ra, nt);
                 VM_PROTECT(luaC_checkGC(L));
                 VM_NEXT();
             }
@@ -2480,7 +2509,9 @@ reentry:
 
                 VM_PROTECT_PC(); // luaH_clone may fail due to OOM
 
-                sethvalue(L, ra, luaH_clone(L, hvalue(kv)));
+                LuaTable* nt = luaH_clone(L, hvalue(kv));
+                luaD_propagate(L);
+                sethvalue(L, ra, nt);
                 VM_PROTECT(luaC_checkGC(L));
                 VM_NEXT();
             }
@@ -2511,6 +2542,7 @@ reentry:
                     VM_PROTECT_PC(); // luaH_resizearray may fail due to OOM
 
                     luaH_resizearray(L, h, last);
+                    luaD_propagate(L);
                 }
 
                 TValue* array = h->array;
@@ -2534,6 +2566,7 @@ reentry:
                     VM_PROTECT_PC();
 
                     luaV_prepareFORN(L, ra + 0, ra + 1, ra + 2);
+                    luaD_propagate(L);
                 }
 
                 double limit = nvalue(ra + 0);
@@ -2596,7 +2629,7 @@ reentry:
                             if (ttisnil(fn))
                             {
                                 VM_PROTECT_PC();
-                                luaG_typeerror(L, ra, "iterate over");
+                                luaG_raisetypeerror(L, , ra, "iterate over");
                             }
                         }
 
@@ -2618,7 +2651,7 @@ reentry:
                             if (ttisnil(ra))
                             {
                                 VM_PROTECT_PC(); // next call always errors
-                                luaG_typeerror(L, ra, "call");
+                                luaG_raisetypeerror(L, , ra, "call");
                             }
                         }
                         else if (fasttm(L, mt, TM_CALL))
@@ -2636,7 +2669,7 @@ reentry:
                         else
                         {
                             VM_PROTECT_PC(); // next call always errors
-                            luaG_typeerror(L, ra, "iterate over");
+                            luaG_raisetypeerror(L, , ra, "iterate over");
                         }
                     }
                 }
@@ -2669,7 +2702,7 @@ reentry:
                             if (ttisnil(ra))
                             {
                                 VM_PROTECT_PC(); // next call always errors
-                                luaG_typeerror(L, ra, "call");
+                                luaG_raisetypeerror(L, , ra, "call");
                             }
                         }
                         else if (fasttm(L, mt, TM_CALL))
@@ -2687,7 +2720,7 @@ reentry:
                         else
                         {
                             VM_PROTECT_PC(); // next call always errors
-                            luaG_typeerror(L, ra, "iterate over");
+                            luaG_raisetypeerror(L, , ra, "iterate over");
                         }
                     }
                 }
@@ -2819,7 +2852,7 @@ reentry:
                 else if (!ttisfunction(ra))
                 {
                     VM_PROTECT_PC(); // next call always errors
-                    luaG_typeerror(L, ra, "iterate over");
+                    luaG_raisetypeerror(L, , ra, "iterate over");
                 }
 
                 pc += LUAU_INSN_D(insn);
@@ -2842,7 +2875,7 @@ reentry:
                 else if (!ttisfunction(ra))
                 {
                     VM_PROTECT_PC(); // next call always errors
-                    luaG_typeerror(L, ra, "iterate over");
+                    luaG_raisetypeerror(L, , ra, "iterate over");
                 }
 
                 pc += LUAU_INSN_D(insn);
@@ -2918,6 +2951,7 @@ reentry:
                 // note: we save closure to stack early in case the code below wants to capture it by value
                 Closure* ncl =
                     (kcl->env == cl->env) ? kcl : luaF_newLclosure(L, kcl->nupvalues, cl->env, getproto(kcl));
+                    luaD_propagate(L);
                 setclvalue(L, ra, ncl);
 
                 // this loop does three things:
@@ -2941,6 +2975,7 @@ reentry:
                     if (ncl == kcl && kcl->preload == 0)
                     {
                         ncl = luaF_newLclosure(L, kcl->nupvalues, cl->env, getproto(kcl));
+                        luaD_propagate(L);
                         setclvalue(L, ra, ncl);
 
                         ui = -1; // restart the loop to fill all upvalues
@@ -3051,6 +3086,7 @@ reentry:
                     VM_PROTECT_PC(); // f may fail due to OOM
 
                     int n = f(L, ra, ra + 1, nresults, ra + 2, nparams);
+                    luaD_propagate(L);
 
                     if (n >= 0)
                     {
@@ -3166,6 +3202,7 @@ reentry:
                     VM_PROTECT_PC(); // f may fail due to OOM
 
                     int n = f(L, ra, arg, nresults, NULL, nparams);
+                    luaD_propagate(L);
 
                     if (n >= 0)
                     {
@@ -3216,6 +3253,7 @@ reentry:
                     VM_PROTECT_PC(); // f may fail due to OOM
 
                     int n = f(L, ra, arg1, nresults, arg2, nparams);
+                    luaD_propagate(L);
 
                     if (n >= 0)
                     {
@@ -3266,6 +3304,7 @@ reentry:
                     VM_PROTECT_PC(); // f may fail due to OOM
 
                     int n = f(L, ra, arg1, nresults, arg2, nparams);
+                    luaD_propagate(L);
 
                     if (n >= 0)
                     {
@@ -3323,6 +3362,7 @@ reentry:
                     setobj2s(L, top + 1, arg3);
 
                     int n = f(L, ra, arg1, nresults, top, nparams);
+                    luaD_propagate(L);
 
                     if (n >= 0)
                     {
@@ -3457,12 +3497,17 @@ reentry:
                         ++L->nCcalls;
 
                         if (L->nCcalls >= LUAI_MAXCCALLS)
+                        {
                             luaD_checkCstack(L);
+                            luaD_propagate(L);
+                        }
 
                         luau_setupcci(L, 1, top);
+                        luaD_propagate(L);
 
                         uint16_t cachedslot = LUAU_INSN_AUX_SLOT(aux);
                         onudataindex(L, udata, tsvalue(kv)->atom, &cachedslot, utag);
+                        luaD_propagate(L);
 
                         // update cached slot if instruction didn't deoptimize
                         if (cachedslot != LUAU_INSN_AUX_SLOT(aux) && LUAU_INSN_OP(*(pc - 2)) == LOP_GETUDATAKS)
@@ -3532,12 +3577,17 @@ reentry:
                         ++L->nCcalls;
 
                         if (L->nCcalls >= LUAI_MAXCCALLS)
+                        {
                             luaD_checkCstack(L);
+                            luaD_propagate(L);
+                        }
 
                         luau_setupcci(L, 0, top);
+                        luaD_propagate(L);
 
                         uint16_t cachedslot = LUAU_INSN_AUX_SLOT(aux);
                         onudatanewindex(L, udata, tsvalue(kv)->atom, &cachedslot, utag);
+                        luaD_propagate(L);
 
                         // update cached slot if instruction didn't deoptimize
                         if (cachedslot != LUAU_INSN_AUX_SLOT(aux) && LUAU_INSN_OP(*(pc - 2)) == LOP_SETUDATAKS)
@@ -3594,7 +3644,7 @@ reentry:
 
                         LUAU_ASSERT(LUAU_INSN_OP(*pc) == LOP_CALL || LUAU_INSN_OP(*pc) == LOP_CALLFB);
                         insn = *pc++;
-                        if (FFlag::LuauCallFeedback && LUAU_INSN_OP(insn) == LOP_CALLFB)
+                        if (LUAU_INSN_OP(insn) == LOP_CALLFB)
                             pc++;
 
                         StkId callRa = VM_REG(LUAU_INSN_A(insn));
@@ -3611,11 +3661,13 @@ reentry:
                         // note: namecalls do not increase C call number and allow yielding
 
                         luau_setupcci(L, nresults, ra);
+                        luaD_propagate(L);
 
                         LUAU_ASSERT(tsvalue(kv)->atom >= 0);
 
                         uint16_t cachedslot = LUAU_INSN_AUX_SLOT(aux);
                         int results = onudatanamecall(L, udata, tsvalue(kv)->atom, &cachedslot, utag);
+                        luaD_propagate(L);
 
                         // update cached slot if instruction didn't deoptimize
                         if (cachedslot != LUAU_INSN_AUX_SLOT(aux) && LUAU_INSN_OP(*(ncslot - 1)) == LOP_NAMECALLUDATA)
@@ -3623,7 +3675,10 @@ reentry:
 
                         // yield
                         if (results < 0)
+                        {
+                            LUAU_ASSERT(isyielded(L));
                             return;
+                        }
 
                         // ci is our callinfo, cip is our parent
                         CallInfo* ci = L->ci;
@@ -3669,6 +3724,7 @@ reentry:
                 VM_CASE_STKID rc = VM_REG(LUAU_INSN_C(insn));
                 VM_PROTECT_PC();
                 luaR_addclassmember(L, classvalue(ra), tsvalue(membername), rc);
+                luaD_propagate(L);
                 VM_NEXT();
             }
 
@@ -3733,11 +3789,13 @@ reentry:
 
                 // note: creating a call frame can invalidate 'ra' and other StkId
                 luau_pushhandlerci(L, ra, errfunc, nresults);
+                luaD_propagate(L);
 
                 // prepare target call, note that we request fewer results from the target as pcalls provide 'status'
                 StkId callerfunc = L->ci->base + errfunc;
                 int calleeresults = (nresults > 0) ? nresults - 1 : nresults;
                 int pr = luau_precall(L, callerfunc, calleeresults);
+                luaD_propagate(L);
 
                 if (LUAU_LIKELY(pr == PCRLUA))
                 {
@@ -3780,6 +3838,7 @@ reentry:
 
                 VM_PROTECT_PC();
                 LuauClass* newcls = luaR_cloneclass(L, classvalue(kv));
+                luaD_propagate(L);
                 setclassvalue(L, ra, newcls);
                 newcls->isopen = (LUAU_INSN_C(insn) & 0x1u) != 0; // bottom bit of C is the isopen flag
 
@@ -3788,9 +3847,54 @@ reentry:
                     VM_CASE_STKID rb = VM_REG(super);
 
                     if (LUAU_UNLIKELY(!ttisclass(rb)))
-                        luaG_typeerror(L, rb, "extend");
+                        luaG_raisetypeerror(L, , rb, "extend");
 
                     luaR_inheritclass(L, newcls, classvalue(rb));
+                    luaD_propagate(L);
+                }
+
+                VM_NEXT();
+            }
+
+            VM_CASE(LOP_CONSTRUCT)
+            {
+                VM_CASE_INSTRUCTION insn = *pc++;
+                VM_CASE_STKID ra = VM_REG(LUAU_INSN_A(insn));
+                VM_CASE_STKID rb = VM_REG(LUAU_INSN_B(insn));
+                uint32_t fbslot = *pc++;
+
+                VM_PROTECT_PC();
+                luaR_tryconstructobject(L, ra, rb, fbslot);
+                luaD_propagate(L);
+                VM_NEXT();
+            }
+
+            VM_CASE(LOP_FINCONSTRUCT)
+            {
+                VM_CASE_INSTRUCTION insn = *pc++;
+                TValue* arg = VM_REG(LUAU_INSN_A(insn));
+
+                if (ttisobject(arg))
+                {
+                    // Class construction from a previous CONSTRUCT was successful, so do the work of the CALL and skip it
+                    int skip = LUAU_INSN_C(insn);
+                    VM_ASSERT_PC(pc + skip);
+
+                    Instruction call = pc[skip];
+                    LUAU_ASSERT(LUAU_INSN_OP(call) == LOP_CALL);
+
+                    VM_CASE_STKID ra = VM_REG(LUAU_INSN_A(call));
+                    int nresults = LUAU_INSN_C(call) - 1;
+
+                    StkId res = ra;
+                    setobj2s(L, res++, arg);
+
+                    for (int i = 1; i < nresults; ++i)
+                        setnilvalue(res++);
+
+                    L->top = nresults == LUA_MULTRET ? ra + 1 : L->ci->top;
+                    pc += skip + 1;
+                    VM_ASSERT_PC(pc);
                 }
 
                 VM_NEXT();
@@ -3852,12 +3956,14 @@ int luau_precall(lua_State* L, StkId func, int nresults)
     if (!ttisfunction(func))
     {
         luaV_tryfuncTM(L, func);
+        luaD_propagate(L, PCRC);
         // L->top is incremented by tryfuncTM
     }
 
     Closure* ccl = clvalue(func);
 
     CallInfo* ci = incr_ci(L);
+    luaD_propagate(L, PCRC);
     ci->func = func;
     ci->p = getproto(ccl);
     ci->base = func + 1;
@@ -3870,6 +3976,7 @@ int luau_precall(lua_State* L, StkId func, int nresults)
     // Note: L->top is assigned externally
 
     luaD_checkstackfornewci(L, ccl->stacksize);
+    luaD_propagate(L, PCRC);
     LUAU_ASSERT(ci->top <= L->stack_last);
 
     if (!ccl->isC)
@@ -3896,10 +4003,14 @@ int luau_precall(lua_State* L, StkId func, int nresults)
     {
         lua_CFunction func = ccl->c.f;
         int n = func(L);
+        luaD_propagate(L, PCRC);
 
         // yield
         if (n < 0)
+        {
+            LUAU_ASSERT(isyielded(L));
             return PCRYIELD;
+        }
 
         // ci is our callinfo, cip is our parent
         CallInfo* ci = L->ci;
@@ -3932,6 +4043,7 @@ void luau_pushhandlerci(lua_State* L, StkId funcslot, int errfunc, int nresults)
     LUAU_ASSERT(ccl->isC && ccl->c.cont);
 
     CallInfo* ci = incr_ci(L);
+    luaD_propagate(L);
     ci->func = funcslot;
     ci->p = nullptr;
     ci->base = funcslot + 1;
@@ -3943,6 +4055,7 @@ void luau_pushhandlerci(lua_State* L, StkId funcslot, int errfunc, int nresults)
     // Note: L->top is assigned externally
 
     luaD_checkstackfornewci(L, int(ccl->stacksize));
+    luaD_propagate(L);
     LUAU_ASSERT(ci->top <= L->stack_last);
 }
 

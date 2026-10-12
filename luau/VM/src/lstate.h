@@ -233,6 +233,11 @@ typedef struct global_State
 
     struct lua_jmpbuf* errorjmp; // jump buffer data for longjmp-style error handling
 
+#if LUAU_ERRORS_AS_RETURNS
+    int errcode;
+    int protecteddepth;
+#endif
+
     uint64_t rngstate; // PCG random number generator state
     uint64_t ptrenckey[4]; // pointer encoding key for display (remove when unreferenced)
 
@@ -270,6 +275,7 @@ typedef struct global_State
 
     GCStats gcstats;
     uint32_t lastprotoid;
+    uint32_t lastclassid;
 
 #ifdef LUAI_GCMETRICS
     GCMetrics gcmetrics;
